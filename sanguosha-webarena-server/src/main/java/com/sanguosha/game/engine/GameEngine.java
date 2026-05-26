@@ -143,6 +143,8 @@ public class GameEngine {
                     List<String> cardIds = current.getHandCards().stream()
                             .map(GameCard::getId).toList();
                     action.setOptionalCardIds(cardIds);
+                    action.setOptionalCards(cardIdsToClientMap(state, cardIds));
+                    action.setOptionalTargetIds(Collections.singletonList(current.getUserId()));
 
                     state.setPendingAction(action);
                     return action;
@@ -256,6 +258,7 @@ public class GameEngine {
                 .map(GameCard::getId)
                 .toList();
         action.setOptionalCardIds(shanCards);
+        action.setOptionalCards(cardIdsToClientMap(state, shanCards));
         action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
         action.setMessage(target.getUsername() + " 请出闪");
         action.setExtraData(Map.of("hasJiuEffect", hasJiuEffect, "damage", 1));
@@ -336,6 +339,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(targetCards);
+                action.setOptionalCards(cardIdsToClientMap(state, targetCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请选择要弃置的牌（过河拆桥）");
                 action.setExtraData(Map.of("effectType", "GUO_HE"));
@@ -370,6 +374,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(targetCards);
+                action.setOptionalCards(cardIdsToClientMap(state, targetCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请选择要获得的牌（顺手牵羊）");
                 action.setExtraData(Map.of("effectType", "SHUN_SHOU"));
@@ -397,6 +402,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(shaCards);
+                action.setOptionalCards(cardIdsToClientMap(state, shaCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请出杀响应决斗");
                 action.setExtraData(Map.of("effectType", "JUE_DOU", "initiatorId", player.getUserId()));
@@ -431,6 +437,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(shaCards);
+                action.setOptionalCards(cardIdsToClientMap(state, shaCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请出杀响应南蛮入侵");
                 action.setExtraData(Map.of("effectType", "NAN_MAN", "damage", 1));
@@ -456,6 +463,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(shanCards);
+                action.setOptionalCards(cardIdsToClientMap(state, shanCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请出闪响应万箭齐发");
                 action.setExtraData(Map.of("effectType", "WAN_JIAN", "damage", 1));
@@ -492,12 +500,17 @@ public class GameEngine {
                 List<String> shownIds = shown.stream().map(GameCard::getId).toList();
                 state.addLog(player.getUsername() + " 使用了五谷丰登，展示" + shown.size() + "张牌");
 
+                // 构建卡牌展示信息（从drawn card对象直接构建，而非从state查找）
+                List<Map<String, Object>> wuguCardInfos = shown.stream().map(this::cardToClientMap).toList();
+
                 GameAction action = new GameAction();
                 action.setActionType("CHOOSE_WUGU_CARD");
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(shownIds);
+                action.setOptionalCards(wuguCardInfos);
                 action.setMessage("请选择一张牌（五谷丰登）");
+                action.setOptionalTargetIds(Collections.singletonList(player.getUserId()));
                 action.setExtraData(Map.of("wuguCards", shownIds));
 
                 state.setPendingAction(action);
@@ -523,6 +536,7 @@ public class GameEngine {
                 action.setSourceCardId(card.getId());
                 action.setSourcePlayerId(player.getUserId());
                 action.setOptionalCardIds(shaCards);
+                action.setOptionalCards(cardIdsToClientMap(state, shaCards));
                 action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
                 action.setMessage("请出杀，否则失去武器（借刀杀人）");
                 action.setExtraData(Map.of("effectType", "JIE_DAO", "weaponId", target.getWeapon().getId()));
@@ -929,6 +943,7 @@ public class GameEngine {
             newAction.setSourcePlayerId(player.getUserId());
             newAction.setDiscardCount(remaining);
             newAction.setMessage("还需弃置 " + remaining + " 张牌");
+            newAction.setOptionalTargetIds(Collections.singletonList(player.getUserId()));
 
             List<String> cardIds = player.getHandCards().stream()
                     .map(GameCard::getId).toList();
@@ -1007,6 +1022,60 @@ public class GameEngine {
         return state.getDrawPile().stream()
                 .filter(c -> c.getId().equals(cardId))
                 .findFirst().orElse(null);
+    }
+
+    /**
+     * 在游戏状态中通过ID查找卡牌（从手牌、装备区、判定区、牌堆、弃牌堆中查找）
+     */
+    private GameCard findCardInGameState(GameState state, String cardId) {
+        for (GamePlayer p : state.getPlayers()) {
+            GameCard c = findCard(p, cardId);
+            if (c != null) return c;
+            // 也查找判定区
+            for (GameCard judge : p.getJudgeArea()) {
+                if (judge.getId().equals(cardId)) return judge;
+            }
+        }
+        // 查找牌堆
+        for (GameCard c : state.getDrawPile()) {
+            if (c.getId().equals(cardId)) return c;
+        }
+        // 查找弃牌堆
+        for (GameCard c : state.getDiscardPile()) {
+            if (c.getId().equals(cardId)) return c;
+        }
+        return null;
+    }
+
+    /**
+     * 从卡牌ID列表获取前端展示信息
+     */
+    private List<Map<String, Object>> cardIdsToClientMap(GameState state, List<String> cardIds) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (String id : cardIds) {
+            GameCard c = findCardInGameState(state, id);
+            if (c != null) {
+                result.add(cardToClientMap(c));
+            }
+        }
+        return result;
+    }
+
+    private Map<String, Object> cardToClientMap(GameCard card) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", card.getId());
+        m.put("type", card.getCardType().name());
+        m.put("displayName", card.getCardType().getDisplayName());
+        m.put("category", card.getCardType().getCategory());
+        m.put("suit", card.getSuit().getSymbol());
+        m.put("suitName", card.getSuit().name());
+        m.put("number", card.getNumber());
+        m.put("numberDisplay", card.getNumberDisplay());
+        return m;
+    }
+
+    private List<Map<String, Object>> cardsToClientMap(List<GameCard> cards) {
+        return cards.stream().map(this::cardToClientMap).toList();
     }
 
     private boolean isBlackCard(String cardId, GamePlayer player) {

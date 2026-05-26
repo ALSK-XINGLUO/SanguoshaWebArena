@@ -2,6 +2,7 @@ package com.sanguosha.game.state;
 
 import lombok.Data;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +20,7 @@ public class GameAction {
     private int discardCount;          // 需要弃牌的数量
     private String message;            // 提示消息
     private Object extraData;          // 额外数据
+    private List<Map<String, Object>> optionalCards; // 可选卡牌的展示信息（名称、花色等）
 
     public Map<String, Object> toClientMap() {
         Map<String, Object> map = new LinkedHashMap<>();
@@ -30,6 +32,7 @@ public class GameAction {
         map.put("discardCount", discardCount);
         map.put("message", message);
         map.put("extraData", extraData);
+        map.put("optionalCards", optionalCards != null ? optionalCards : new ArrayList<>());
         return map;
     }
 }

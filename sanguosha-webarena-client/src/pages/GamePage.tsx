@@ -44,8 +44,20 @@ interface GameStateDTO {
   players: PlayerDTO[];
   drawPileCount: number;
   discardPileCount: number;
-  pendingAction: any;
+  pendingAction: PendingActionDTO | null;
   log: string[];
+}
+
+interface PendingActionDTO {
+  actionType: string;
+  sourceCardId: string | null;
+  sourcePlayerId: number;
+  optionalCardIds: string[];
+  optionalCards: CardDTO[];
+  optionalTargetIds: number[];
+  message: string;
+  discardCount: number;
+  extraData: Record<string, any>;
 }
 
 const PHASE_LABELS: Record<string, string> = {
@@ -95,6 +107,7 @@ export default function GamePage() {
   const [gs, setGs] = useState<GameStateDTO | null>(null);
   const [gameId, setGameId] = useState<string>('');
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
+  const [selectedPendingCard, setSelectedPendingCard] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [gameOver, setGameOver] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -178,6 +191,33 @@ export default function GamePage() {
     setSelectedCard(null);
   };
 
+  // --- Pending action (modal) handlers ---
+  const pendingAction = gs?.pendingAction;
+  const isMyPendingAction = pendingAction && pendingAction.optionalTargetIds?.includes(currentUser?.userId ?? 0);
+
+  const handlePendingCardClick = (cardId: string) => {
+    if (!pendingAction || !isMyPendingAction) return;
+    setSelectedPendingCard((prev) => (prev === cardId ? null : cardId));
+  };
+
+  const handleConfirmPendingAction = () => {
+    if (!pendingAction || !isMyPendingAction) return;
+    send('PENDING_RESPONSE', {
+      gameId,
+      cardId: selectedPendingCard,
+    });
+    setSelectedPendingCard(null);
+  };
+
+  const handleSkipPendingAction = () => {
+    if (!pendingAction || !isMyPendingAction) return;
+    send('PENDING_RESPONSE', {
+      gameId,
+      cardId: null,
+    });
+    setSelectedPendingCard(null);
+  };
+
   const handleBackToLobby = () => {
     navigate('/lobby');
   };
@@ -227,6 +267,91 @@ export default function GamePage() {
         <div className="card-corner card-corner-bottom-right">
           <span className="card-corner-number">{card.numberDisplay}</span>
           <span className="card-corner-suit">{suitSym}</span>
+        </div>
+      </div>
+    );
+  };
+
+  // --- Pending action modal render ---
+  const renderPendingModal = () => {
+    if (!pendingAction || !isMyPendingAction) return null;
+
+    const optionalCards = pendingAction.optionalCards || [];
+    const isDiscard = pendingAction.actionType === 'DISCARD';
+    const isChooseWugu = pendingAction.actionType === 'CHOOSE_WUGU_CARD';
+    const isChooseTargetCard = pendingAction.actionType === 'CHOOSE_TARGET_CARD';
+    const isRespondShan = pendingAction.actionType === 'RESPOND_SHAN';
+    const isRespondSha = pendingAction.actionType === 'RESPOND_SHA';
+
+    // For RESPOND_SHAN and RESPOND_SHA, if there are no optional cards, only show skip button
+    const hasCards = optionalCards.length > 0;
+    const canSkip = isRespondShan || isRespondSha || isChooseWugu || isChooseTargetCard || isDiscard;
+
+    return (
+      <div className="pending-overlay">
+        <div className="pending-modal">
+          <div className="pending-header">
+            <div className="pending-title">{pendingAction.message}</div>
+            {isDiscard && (
+              <div className="pending-hint">
+                需要弃置 <strong>{pendingAction.discardCount}</strong> 张牌，请选择要弃置的牌
+              </div>
+            )}
+            {isChooseWugu && (
+              <div className="pending-hint">请选择一张要获得的牌</div>
+            )}
+          </div>
+          {hasCards && (
+            <div className="pending-cards">
+              {optionalCards.map((card) => {
+                const suitSym = getSuitSymbol(card.suitName);
+                const isRed = isRedSuit(card.suitName);
+                const selected = selectedPendingCard === card.id;
+                return (
+                  <div
+                    key={card.id}
+                    className={`playing-card pending-card ${isRed ? 'red' : 'black'} ${selected ? 'selected' : ''}`}
+                    onClick={() => handlePendingCardClick(card.id)}
+                    title={card.displayName}
+                  >
+                    <div className="card-corner card-corner-top-left">
+                      <span className="card-corner-number">{card.numberDisplay}</span>
+                      <span className="card-corner-suit">{suitSym}</span>
+                    </div>
+                    <div className="card-center">
+                      <span className="card-center-suit">{suitSym}</span>
+                      <span className="card-center-name">{card.displayName}</span>
+                    </div>
+                    <div className="card-corner card-corner-bottom-right">
+                      <span className="card-corner-number">{card.numberDisplay}</span>
+                      <span className="card-corner-suit">{suitSym}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {!hasCards && canSkip && (
+            <div className="pending-no-cards">
+              <span>没有可用的卡牌</span>
+            </div>
+          )}
+          <div className="pending-actions">
+            {hasCards && (
+              <button
+                className="btn btn-primary"
+                onClick={handleConfirmPendingAction}
+                disabled={!selectedPendingCard}
+              >
+                {isDiscard ? '弃牌' : isChooseWugu || isChooseTargetCard ? '选择' : '出牌'}
+              </button>
+            )}
+            {canSkip && (
+              <button className="btn btn-secondary" onClick={handleSkipPendingAction}>
+                {isDiscard ? '跳过弃牌（取消）' : '跳过'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -289,6 +414,9 @@ export default function GamePage() {
             </div>
           </div>
         )}
+
+        {/* Pending action modal (rendered on top of everything) */}
+        {renderPendingModal()}
 
         {/* Battlefield center */}
         <div className="battlefield">

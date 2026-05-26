@@ -420,3 +420,88 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ===== Pending Action Modal ===== */
+.pending-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.pending-modal {
+  background: var(--bg-card);
+  border: 2px solid var(--gold);
+  border-radius: 14px;
+  padding: 20px 24px;
+  max-width: 600px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+}
+
+.pending-header {
+  text-align: center;
+  width: 100%;
+}
+
+.pending-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gold);
+  margin-bottom: 6px;
+}
+
+.pending-hint {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.pending-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 8px 0;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.pending-card {
+  width: 80px;
+  height: 120px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pending-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.pending-card.selected {
+  transform: translateY(-10px);
+  border-color: var(--gold);
+  box-shadow: 0 6px 20px rgba(241, 196, 15, 0.5);
+}
+
+.pending-no-cards {
+  padding: 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pending-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  width: 100%;
+}
