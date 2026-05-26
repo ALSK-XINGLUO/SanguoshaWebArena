@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { send, on } from '../api/websocket';
+import './GamePage.css';
 
 interface CardDTO {
   id: string;
@@ -56,9 +57,35 @@ const PHASE_LABELS: Record<string, string> = {
   END: '结束阶段',
 };
 
-// Suit color helper
+const CATEGORY_COLORS: Record<string, string> = {
+  BASIC: '#27ae60',
+  EQUIPMENT: '#2980b9',
+  STRATEGY: '#8e44ad',
+  DELAYED_STRATEGY: '#d35400',
+};
+
+function getSuitSymbol(suitName: string): string {
+  switch (suitName) {
+    case 'HEART': return '♥';
+    case 'DIAMOND': return '♦';
+    case 'SPADE': return '♠';
+    case 'CLUB': return '♣';
+    default: return suitName;
+  }
+}
+
 function isRedSuit(suitName: string): boolean {
   return suitName === 'HEART' || suitName === 'DIAMOND';
+}
+
+function getCardCatBg(category: string): string {
+  switch (category) {
+    case 'BASIC': return '#e8f5e9';
+    case 'EQUIPMENT': return '#e3f2fd';
+    case 'STRATEGY': return '#f3e5f5';
+    case 'DELAYED_STRATEGY': return '#fff3e0';
+    default: return '#f5f0e8';
+  }
 }
 
 export default function GamePage() {
@@ -116,7 +143,6 @@ export default function GamePage() {
       alert(data.message);
     });
 
-    // Request current game state (handles page refresh / delayed navigation)
     send('FETCH_GAME_STATE', { roomId });
 
     return () => {
@@ -169,59 +195,94 @@ export default function GamePage() {
 
   const myHandCards: CardDTO[] = me?.handCards || [];
 
+  const renderCard = (card: CardDTO, clickable: boolean) => {
+    const suitSym = getSuitSymbol(card.suitName);
+    const isRed = isRedSuit(card.suitName);
+    const selected = selectedCard === card.id;
+    const classes = [
+      'playing-card',
+      isRed ? 'red' : 'black',
+      clickable ? 'clickable' : 'disabled',
+      selected ? 'selected' : '',
+    ].filter(Boolean).join(' ');
+
+    return (
+      <div
+        key={card.id}
+        className={classes}
+        onClick={() => clickable && handleUseCard(card.id)}
+        title={card.displayName}
+      >
+        {/* Top-left corner */}
+        <div className="card-corner card-corner-top-left">
+          <span className="card-corner-number">{card.numberDisplay}</span>
+          <span className="card-corner-suit">{suitSym}</span>
+        </div>
+        {/* Center */}
+        <div className="card-center">
+          <span className="card-center-suit">{suitSym}</span>
+          <span className="card-center-name">{card.displayName}</span>
+        </div>
+        {/* Bottom-right corner */}
+        <div className="card-corner card-corner-bottom-right">
+          <span className="card-corner-number">{card.numberDisplay}</span>
+          <span className="card-corner-suit">{suitSym}</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderEquipment = (label: string, card: CardDTO | null, icon: string) => {
+    if (!card) return null;
+    const isRed = isRedSuit(card.suitName);
+    return (
+      <div className="equip-slot" title={card.displayName}>
+        <span className={`equip-suit ${isRed ? 'red' : 'black'}`}>{getSuitSymbol(card.suitName)}</span>
+        <span className="equip-name">{icon} {card.displayName}</span>
+      </div>
+    );
+  };
+
   return (
     <div className="page game-page">
+      {/* Header */}
       <div className="game-header">
-        <span className="game-phase">
-          第{gs.turnNumber}回合 · {PHASE_LABELS[gs.phase] || gs.phase}
-        </span>
-        <span className="game-turn">
-          {isMyTurn ? '🎯 你的回合' : `${currentPlayer?.username || '对手'}的回合`}
-        </span>
-        <button className="btn btn-sm" onClick={handleBackToLobby}>
-          返回大厅
-        </button>
+        <div className="game-header-left">
+          <span className="game-phase">
+            {PHASE_LABELS[gs.phase] || gs.phase}
+          </span>
+          <span className="game-turn">
+            第{gs.turnNumber}回合 · {isMyTurn ? '🎯 你的回合' : `${currentPlayer?.username || '对手'}的回合`}
+          </span>
+        </div>
+        <div className="game-header-right">
+          <button className="btn btn-sm" onClick={handleBackToLobby}>
+            返回大厅
+          </button>
+        </div>
       </div>
 
       <div className="game-board">
+        {/* Opponent area */}
         {opponent && (
           <div className="player-area opponent-area">
-            <div className="player-info">
-              <div className="player-name">{opponent.username}</div>
+            <div className="player-info-row">
+              <span className="player-name opponent">{opponent.username}</span>
               <div className="hp-bar">
                 <div className="hp-fill" style={{ width: `${(opponent.currentHp / opponent.maxHp) * 100}%` }} />
                 <span className="hp-text">{opponent.currentHp}/{opponent.maxHp}</span>
               </div>
-              <div className="card-count">手牌: {opponent.handCardCount ?? opponent.handCards?.length ?? 0}</div>
+              <span className="card-count-badge">🃏 {opponent.handCardCount ?? opponent.handCards?.length ?? 0}</span>
             </div>
-            {/* Equipment display */}
+            {/* Equipment */}
             <div className="equipment-area">
-              {opponent.weapon && (
-                <div className="equip-slot" title={opponent.weapon.displayName}>
-                  <span className={`equip-suit ${isRedSuit(opponent.weapon.suitName) ? 'red' : ''}`}>{opponent.weapon.suit}</span>
-                  <span className="equip-name">🪓 {opponent.weapon.displayName}</span>
-                </div>
-              )}
-              {opponent.armor && (
-                <div className="equip-slot" title={opponent.armor.displayName}>
-                  <span className={`equip-suit ${isRedSuit(opponent.armor.suitName) ? 'red' : ''}`}>{opponent.armor.suit}</span>
-                  <span className="equip-name">🛡️ {opponent.armor.displayName}</span>
-                </div>
-              )}
-              {opponent.plusHorse && (
-                <div className="equip-slot" title={opponent.plusHorse.displayName}>
-                  <span className={`equip-suit ${isRedSuit(opponent.plusHorse.suitName) ? 'red' : ''}`}>{opponent.plusHorse.suit}</span>
-                  <span className="equip-name">🐴 {opponent.plusHorse.displayName}</span>
-                </div>
-              )}
-              {opponent.minusHorse && (
-                <div className="equip-slot" title={opponent.minusHorse.displayName}>
-                  <span className={`equip-suit ${isRedSuit(opponent.minusHorse.suitName) ? 'red' : ''}`}>{opponent.minusHorse.suit}</span>
-                  <span className="equip-name">🐴 {opponent.minusHorse.displayName}</span>
-                </div>
-              )}
+              {renderEquipment('武器', opponent.weapon, '🪓')}
+              {renderEquipment('防具', opponent.armor, '🛡️')}
+              {renderEquipment('+1马', opponent.plusHorse, '🐴')}
+              {renderEquipment('-1马', opponent.minusHorse, '🐴')}
             </div>
-            <div className="player-cards-back">
+            {/* Card backs */}
+            <div className="opponent-cards">
               {Array.from({ length: opponent.handCardCount ?? 0 }).map((_, idx) => (
                 <div key={idx} className="card-back" />
               ))}
@@ -229,12 +290,17 @@ export default function GamePage() {
           </div>
         )}
 
+        {/* Battlefield center */}
         <div className="battlefield">
           {selectedCard && !gameOver && (
             <div className="target-select">
-              <p>选择目标:</p>
+              <p>🎯 选择目标:</p>
               {gs.players.filter((p) => p.alive).map((p) => (
-                <button key={p.userId} className="btn btn-sm" onClick={() => handleTargetPlayer(p.userId)}>
+                <button
+                  key={p.userId}
+                  className="btn btn-sm btn-primary"
+                  onClick={() => handleTargetPlayer(p.userId)}
+                >
                   {p.username}
                 </button>
               ))}
@@ -251,72 +317,42 @@ export default function GamePage() {
           )}
         </div>
 
+        {/* My area */}
         {me && (
           <div className="player-area my-area">
-            <div className="player-info">
-              <div className="player-name">{me.username}</div>
+            <div className="player-info-row">
+              <span className="player-name me">{me.username}</span>
               <div className="hp-bar">
                 <div className="hp-fill" style={{ width: `${(me.currentHp / me.maxHp) * 100}%` }} />
                 <span className="hp-text">{me.currentHp}/{me.maxHp}</span>
               </div>
-              <div className="card-count">手牌: {myHandCards.length}</div>
+              <span className="card-count-badge">🃏 {myHandCards.length}张</span>
             </div>
-            {/* Equipment display */}
+            {/* Equipment */}
             <div className="equipment-area">
-              {me.weapon && (
-                <div className="equip-slot" title={me.weapon.displayName}>
-                  <span className={`equip-suit ${isRedSuit(me.weapon.suitName) ? 'red' : ''}`}>{me.weapon.suit}</span>
-                  <span className="equip-name">🪓 {me.weapon.displayName}</span>
-                </div>
-              )}
-              {me.armor && (
-                <div className="equip-slot" title={me.armor.displayName}>
-                  <span className={`equip-suit ${isRedSuit(me.armor.suitName) ? 'red' : ''}`}>{me.armor.suit}</span>
-                  <span className="equip-name">🛡️ {me.armor.displayName}</span>
-                </div>
-              )}
-              {me.plusHorse && (
-                <div className="equip-slot" title={me.plusHorse.displayName}>
-                  <span className={`equip-suit ${isRedSuit(me.plusHorse.suitName) ? 'red' : ''}`}>{me.plusHorse.suit}</span>
-                  <span className="equip-name">🐴 {me.plusHorse.displayName}</span>
-                </div>
-              )}
-              {me.minusHorse && (
-                <div className="equip-slot" title={me.minusHorse.displayName}>
-                  <span className={`equip-suit ${isRedSuit(me.minusHorse.suitName) ? 'red' : ''}`}>{me.minusHorse.suit}</span>
-                  <span className="equip-name">🐴 {me.minusHorse.displayName}</span>
-                </div>
-              )}
+              {renderEquipment('武器', me.weapon, '🪓')}
+              {renderEquipment('防具', me.armor, '🛡️')}
+              {renderEquipment('+1马', me.plusHorse, '🐴')}
+              {renderEquipment('-1马', me.minusHorse, '🐴')}
             </div>
+            {/* Hand cards */}
             {!gameOver && (
               <div className="hand-cards">
-                {myHandCards.map((card) => (
-                  <div
-                    key={card.id}
-                    className={`card ${selectedCard === card.id ? 'selected' : ''} ${isPlayPhase && isMyTurn ? 'clickable' : ''} ${isRedSuit(card.suitName) ? 'card-red' : 'card-black'}`}
-                    onClick={() => handleUseCard(card.id)}
-                  >
-                    <div className="card-top-left">
-                      <span className={`card-number ${isRedSuit(card.suitName) ? 'red' : ''}`}>{card.numberDisplay}</span>
-                      <span className={`card-suit ${isRedSuit(card.suitName) ? 'red' : ''}`}>{card.suit}</span>
-                    </div>
-                    <div className="card-center-name">{card.displayName}</div>
-                    <div className="card-bottom-right">
-                      <span className={`card-suit ${isRedSuit(card.suitName) ? 'red' : ''}`}>{card.suit}</span>
-                      <span className={`card-number ${isRedSuit(card.suitName) ? 'red' : ''}`}>{card.numberDisplay}</span>
-                    </div>
-                  </div>
-                ))}
+                {myHandCards.map((card) => renderCard(card, isPlayPhase && isMyTurn))}
+                {myHandCards.length === 0 && (
+                  <span style={{ color: 'var(--text-dim)', fontSize: 13, padding: 8 }}>手牌为空</span>
+                )}
               </div>
             )}
+            {/* Actions */}
             <div className="game-actions">
               {isPlayPhase && isMyTurn && (
                 <button className="btn btn-primary" onClick={handleEndTurn} disabled={gameOver}>
                   结束出牌
                 </button>
               )}
-              {!isPlayPhase && (
-                <button className="btn btn-secondary" onClick={handleEndTurn} disabled={!isMyTurn || gameOver}>
+              {!isPlayPhase && isMyTurn && (
+                <button className="btn btn-secondary" onClick={handleEndTurn} disabled={gameOver}>
                   结束回合
                 </button>
               )}
@@ -325,6 +361,7 @@ export default function GamePage() {
         )}
       </div>
 
+      {/* Game log */}
       <div className="game-log">
         <div className="log-messages">
           {logs.map((log, idx) => (
@@ -334,7 +371,11 @@ export default function GamePage() {
         </div>
       </div>
 
-      <div className="discard-pile">牌堆: {gs.drawPileCount}张 | 弃牌堆: {gs.discardPileCount}张</div>
+      {/* Footer */}
+      <div className="game-footer">
+        <span>牌堆: {gs.drawPileCount}张</span>
+        <span>弃牌堆: {gs.discardPileCount}张</span>
+      </div>
     </div>
   );
 }

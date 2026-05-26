@@ -81,6 +81,12 @@ public class GameService {
         try {
             // 循环处理不需要玩家交互的阶段
             while (state.getPendingAction() == null && !state.isFinished()) {
+                // PLAY 阶段需要等待用户出牌或结束出牌，不能自动推进
+                if ("PLAY".equals(state.getPhase())) {
+                    broadcastGameState(room, state);
+                    return;
+                }
+
                 GameAction pendingAction = gameEngine.processPhase(state);
 
                 if (pendingAction != null) {

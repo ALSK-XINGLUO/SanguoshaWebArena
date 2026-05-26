@@ -42,7 +42,7 @@ public class GameCard {
      * 获取显示名称（含花色和点数）
      */
     public String getDisplayName() {
-        return suit.getSymbol() + number + " " + cardType.getDisplayName();
+        return suit.getSymbol() + getNumberDisplay() + " " + cardType.getDisplayName();
     }
 
     /**

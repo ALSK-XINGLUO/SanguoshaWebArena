@@ -211,8 +211,14 @@ public class GameState {
             map.put("pendingAction", null);
         }
 
-        int logSize = gameLog.size();
-        map.put("log", logSize > 20 ? gameLog.subList(logSize - 20, logSize) : new ArrayList<>(gameLog));
+        // 先对整个 CopyOnWriteArrayList 做快照，再截取，避免 subList 触发并发修改检查
+        List<String> logSnapshot = new ArrayList<>(gameLog);
+        int logSize = logSnapshot.size();
+        if (logSize > 20) {
+            map.put("log", logSnapshot.subList(logSize - 20, logSize));
+        } else {
+            map.put("log", logSnapshot);
+        }
 
         return map;
     }
@@ -240,8 +246,14 @@ public class GameState {
         map.put("discardPileCount", discardPile.size());
         map.put("pendingAction", null);
 
-        int logSize = gameLog.size();
-        map.put("log", logSize > 20 ? gameLog.subList(logSize - 20, logSize) : new ArrayList<>(gameLog));
+        // 先对整个 CopyOnWriteArrayList 做快照，再截取，避免 subList 触发并发修改检查
+        List<String> logSnapshot = new ArrayList<>(gameLog);
+        int logSize = logSnapshot.size();
+        if (logSize > 20) {
+            map.put("log", logSnapshot.subList(logSize - 20, logSize));
+        } else {
+            map.put("log", logSnapshot);
+        }
 
         return map;
     }
