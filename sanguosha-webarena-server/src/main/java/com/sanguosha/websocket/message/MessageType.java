@@ -20,6 +20,10 @@ public class MessageType {
     public static final String FETCH_GAME_STATE = "FETCH_GAME_STATE";
     public static final String END_TURN = "END_TURN";
 
+    // Surrender
+    public static final String SURRENDER = "SURRENDER";
+    public static final String GAME_SURRENDER = "GAME_SURRENDER";
+
     // System
     public static final String ERROR = "ERROR";
     public static final String RECONNECT_ROOM = "RECONNECT_ROOM";

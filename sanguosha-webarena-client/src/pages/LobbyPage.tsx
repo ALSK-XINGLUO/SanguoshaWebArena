@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
-import { connect, disconnect, send, on } from '../api/websocket';
+import { send, on } from '../api/websocket';
 
 interface RoomBrief {
   id: string;
@@ -15,7 +15,7 @@ interface RoomBrief {
 
 export default function LobbyPage() {
   const navigate = useNavigate();
-  const { user, token, logout } = useAuthStore();
+  const { user, logout } = useAuthStore();
   const [rooms, setRooms] = useState<RoomBrief[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [roomName, setRoomName] = useState('');
@@ -23,10 +23,6 @@ export default function LobbyPage() {
   const [joinPwd, setJoinPwd] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    if (!token) return;
-
-    connect(token);
-
     const unsubRoomList = on('ROOM_LIST', (_, data) => {
       setRooms(data.rooms || []);
     });
@@ -42,14 +38,6 @@ export default function LobbyPage() {
         prev.map((r) => (r.id === data.id ? { ...r, playerCount: data.playerCount, status: data.status } : r))
       );
     });
-    const unsubReconnect = on('RECONNECT_ROOM', (_, data) => {
-      // user was already in a room after browser refresh
-      if (data.status === 'PLAYING') {
-        navigate(`/game/${data.roomId}`);
-      } else {
-        navigate(`/room/${data.roomId}`);
-      }
-    });
 
     send('ROOM_LIST');
 
@@ -58,12 +46,10 @@ export default function LobbyPage() {
       unsubCreate();
       unsubJoin();
       unsubRoomUpdate();
-      unsubReconnect();
     };
-  }, [token, navigate]);
+  }, [navigate]);
 
   const handleLogout = () => {
-    disconnect();
     logout();
     navigate('/login');
   };

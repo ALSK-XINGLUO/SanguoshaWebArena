@@ -37,6 +37,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         sessionRegistry.register(userId, session);
         log.info("用户 [{}] {} 已建立WebSocket连接", userId, username);
 
+        // clear disconnect record (reconnection)
+        sessionRegistry.clearDisconnect(userId);
+
         // Check if user was already in a room (e.g. after browser refresh)
         Room existingRoom = roomManager.findRoomByUserId(userId);
         if (existingRoom != null) {
@@ -75,6 +78,11 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         if (userId != null) {
             sessionRegistry.remove(userId);
+            // if in a game, record disconnect time for timeout check
+            Room room = roomManager.findRoomByUserId(userId);
+            if (room != null && "PLAYING".equals(room.getStatus())) {
+                sessionRegistry.recordDisconnect(userId);
+            }
             log.info("用户 [{}] WebSocket连接已关闭", userId);
         }
     }
@@ -86,6 +94,10 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
         if (userId != null) {
             sessionRegistry.remove(userId);
+            Room room = roomManager.findRoomByUserId(userId);
+            if (room != null && "PLAYING".equals(room.getStatus())) {
+                sessionRegistry.recordDisconnect(userId);
+            }
         }
         log.error("WebSocket传输错误 userId={}", userId, exception);
     }

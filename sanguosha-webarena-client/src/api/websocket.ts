@@ -6,6 +6,7 @@ let ws: WebSocket | null = null;
 let handlers = new Map<string, MessageHandler[]>();
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let messageQueue: string[] = [];
 
 export function connect(token: string) {
   if (ws && ws.readyState === WebSocket.OPEN) return;
@@ -17,6 +18,11 @@ export function connect(token: string) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+    // flush queued messages
+    for (const msg of messageQueue) {
+      ws!.send(msg);
+    }
+    messageQueue = [];
     // heartbeat every 30s
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     heartbeatTimer = setInterval(() => {
@@ -65,8 +71,11 @@ export function disconnect() {
 }
 
 export function send(type: string, data?: any) {
+  const msg = JSON.stringify({ type, data: data || {} });
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type, data: data || {} }));
+    ws.send(msg);
+  } else {
+    messageQueue.push(msg);
   }
 }
 

@@ -11,10 +11,13 @@ import com.sanguosha.websocket.session.UserSessionRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.Map;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.UUID;
 
 /**
@@ -288,6 +291,111 @@ public class GameService {
         }
 
         processGamePhase(room, state);
+    }
+
+    /**
+     * 处理投降
+     */
+    public void handleSurrender(Long userId, String username, WebSocketSession session, Object data) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) data;
+        String gameId = (String) params.get("gameId");
+
+        GameState state = gameEngine.getGame(gameId);
+        if (state == null) {
+            sendError(session, "游戏不存在");
+            return;
+        }
+
+        if (state.isFinished()) {
+            sendError(session, "游戏已结束");
+            return;
+        }
+
+        Room room = roomManager.getRoom(state.getRoomId());
+        if (room == null) {
+            sendError(session, "房间不存在");
+            return;
+        }
+
+        Long opponentId = gameEngine.removePlayerFromGame(state.getGameId(), userId);
+        if (opponentId == null) {
+            sendError(session, "无法处理投降");
+            return;
+        }
+
+        var opponent = state.getPlayers().stream()
+                .filter(p -> p.getUserId().equals(opponentId))
+                .findFirst().orElse(null);
+
+        state.setFinished(true);
+        state.setWinnerId(opponentId);
+        state.setWinnerName(opponent != null ? opponent.getUsername() : "对手");
+        state.setPendingAction(null);
+        state.addLog(username + " 投降了！" + (opponent != null ? opponent.getUsername() : "对手") + " 获胜！");
+
+        log.info("玩家 {} 投降，{} 获胜 (gameId={})", username,
+                opponent != null ? opponent.getUsername() : "对手", gameId);
+
+        broadcastGameOver(room, state);
+        sessionRegistry.clearDisconnect(userId);
+        scheduleRoomClose(room.getId(), gameId);
+    }
+
+    /**
+     * 定时检查断线超时玩家（每15秒执行一次）
+     */
+    @Scheduled(fixedRate = 15000)
+    public void checkDisconnectTimeouts() {
+        for (Long userId : sessionRegistry.getDisconnectedUserIds()) {
+            Long disconnectTime = sessionRegistry.getDisconnectTime(userId);
+            if (disconnectTime == null) continue;
+            if (System.currentTimeMillis() - disconnectTime < 60_000) continue;
+
+            Room room = roomManager.findRoomByUserId(userId);
+            if (room == null || !"PLAYING".equals(room.getStatus())) {
+                sessionRegistry.clearDisconnect(userId);
+                continue;
+            }
+
+            GameState state = gameEngine.findGameByUserId(userId);
+            if (state == null || state.isFinished()) {
+                sessionRegistry.clearDisconnect(userId);
+                continue;
+            }
+
+            log.info("玩家 {} 断线超过60秒，自动判负 (roomId={}, gameId={})",
+                    userId, room.getId(), state.getGameId());
+
+            Long opponentId = gameEngine.removePlayerFromGame(state.getGameId(), userId);
+            var opponent = state.getPlayers().stream()
+                    .filter(p -> p.getUserId().equals(opponentId))
+                    .findFirst().orElse(null);
+
+            state.setFinished(true);
+            state.setWinnerId(opponentId);
+            state.setWinnerName(opponent != null ? opponent.getUsername() : "对手");
+            state.setPendingAction(null);
+            state.addLog((opponent != null ? opponent.getUsername() : "对手") + " 获胜（对方断线超时）");
+
+            broadcastGameOver(room, state);
+            sessionRegistry.clearDisconnect(userId);
+            scheduleRoomClose(room.getId(), state.getGameId());
+        }
+    }
+
+    /**
+     * 5秒后自动关闭房间并清理游戏状态
+     */
+    private void scheduleRoomClose(String roomId, String gameId) {
+        new Timer(true).schedule(new TimerTask() {
+            @Override
+            public void run() {
+                gameEngine.removeGame(gameId);
+                roomManager.removeRoom(roomId);
+                log.info("房间 {} (游戏 {}) 已自动关闭", roomId, gameId);
+            }
+        }, 5000);
     }
 
     /**

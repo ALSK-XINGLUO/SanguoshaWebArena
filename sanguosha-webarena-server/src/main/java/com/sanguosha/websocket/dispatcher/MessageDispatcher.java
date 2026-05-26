@@ -57,6 +57,9 @@ public class MessageDispatcher {
                 case MessageType.END_TURN -> gameService.handleEndTurn(userId, username, session, data);
                 case MessageType.PENDING_RESPONSE -> gameService.handleResponse(userId, username, session, data);
 
+                // Surrender
+                case MessageType.SURRENDER -> gameService.handleSurrender(userId, username, session, data);
+
                 default -> sendError(session, "未知消息类型: " + type);
             }
         } catch (Exception e) {

@@ -6,6 +6,7 @@ import com.sanguosha.game.context.CardPool;
 import com.sanguosha.game.player.GamePlayer;
 import com.sanguosha.game.state.GameAction;
 import com.sanguosha.game.state.GameState;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -14,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 1v1 游戏引擎 - 核心游戏逻辑
  */
+@Slf4j
 @Component
 public class GameEngine {
 
@@ -48,6 +50,31 @@ public class GameEngine {
             }
         }
         return null;
+    }
+
+    /**
+     * 从游戏中移除指定用户（投降/断线超时）
+     * @return 被移除用户的对手ID，如果双方都已不在则返回 null
+     */
+    public Long removePlayerFromGame(String gameId, Long userId) {
+        GameState state = games.get(gameId);
+        if (state == null) return null;
+
+        var opponent = state.getPlayers().stream()
+                .filter(p -> !p.getUserId().equals(userId))
+                .findFirst().orElse(null);
+        return opponent != null ? opponent.getUserId() : null;
+    }
+
+    /**
+     * 移除游戏并清理关联索引
+     */
+    public void removeGame(String gameId) {
+        GameState state = games.remove(gameId);
+        if (state != null && state.getRoomId() != null) {
+            roomGameIndex.remove(state.getRoomId());
+            log.info("游戏 {} (房间 {}) 已从引擎中移除", gameId, state.getRoomId());
+        }
     }
 
     /**

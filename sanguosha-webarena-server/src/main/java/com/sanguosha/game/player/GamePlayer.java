@@ -215,12 +215,11 @@ public class GamePlayer {
         map.put("maxHp", maxHp);
         map.put("currentHp", currentHp);
         map.put("alive", alive);
+        map.put("handCardCount", handCards.size());
 
         if (isSelf) {
             List<Map<String, Object>> handList = handCards.stream().map(this::cardToMap).toList();
             map.put("handCards", handList);
-        } else {
-            map.put("handCardCount", handCards.size());
         }
 
         map.put("weapon", weapon != null ? cardToMap(weapon) : null);
