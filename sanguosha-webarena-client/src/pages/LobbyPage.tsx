@@ -33,11 +33,22 @@ export default function LobbyPage() {
     const unsubCreate = on('CREATE_ROOM', (_, data) => {
       navigate(`/room/${data.id}`);
     });
+    const unsubJoin = on('JOIN_ROOM', (_, data) => {
+      navigate(`/room/${data.roomId}`);
+    });
     const unsubRoomUpdate = on('ROOM_UPDATE', (_, data) => {
       // update room list if this user's room changed
       setRooms((prev) =>
         prev.map((r) => (r.id === data.id ? { ...r, playerCount: data.playerCount, status: data.status } : r))
       );
+    });
+    const unsubReconnect = on('RECONNECT_ROOM', (_, data) => {
+      // user was already in a room after browser refresh
+      if (data.status === 'PLAYING') {
+        navigate(`/game/${data.roomId}`);
+      } else {
+        navigate(`/room/${data.roomId}`);
+      }
     });
 
     send('ROOM_LIST');
@@ -45,7 +56,9 @@ export default function LobbyPage() {
     return () => {
       unsubRoomList();
       unsubCreate();
+      unsubJoin();
       unsubRoomUpdate();
+      unsubReconnect();
     };
   }, [token, navigate]);
 

@@ -51,6 +51,10 @@ export default function RoomPage() {
       alert(data.message);
     });
 
+    const unsubGameStart = on('GAME_START', () => {
+      navigate(`/game/${roomId}`);
+    });
+
     // Ask server for current room state by sending JOIN_ROOM (if not already in it)
     // The server will respond with ROOM_UPDATE
     send('JOIN_ROOM', { roomId });
@@ -60,6 +64,7 @@ export default function RoomPage() {
       unsubLeave();
       unsubChat();
       unsubError();
+      unsubGameStart();
     };
   }, [roomId, navigate]);
 

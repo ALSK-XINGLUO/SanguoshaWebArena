@@ -102,6 +102,43 @@ public class GameService {
     }
 
     /**
+     * 处理获取当前游戏状态（用于页面刷新/重连后拉取状态）
+     */
+    public void handleFetchGameState(Long userId, String username, WebSocketSession session, Object data) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) data;
+        String gameId = (String) params.get("gameId");
+        String roomId = (String) params.get("roomId");
+
+        // Try to find game by gameId first
+        GameState state = gameId != null ? gameEngine.getGame(gameId) : null;
+        if (state == null && roomId != null) {
+            state = gameEngine.getGameByRoomId(roomId);
+        }
+        // Fallback: find by userId
+        if (state == null) {
+            state = gameEngine.findGameByUserId(userId);
+        }
+
+        if (state == null) {
+            sendError(session, "游戏不存在");
+            return;
+        }
+
+        Room room = roomManager.getRoom(state.getRoomId());
+        if (room != null) {
+            Map<String, Object> stateData = Map.of(
+                    "gameId", state.getGameId(),
+                    "gameState", state.toClientMap(userId)
+            );
+            sendToPlayer(userId, MessageType.GAME_STATE, stateData);
+            log.info("用户 {} 获取当前游戏状态: gameId={}", username, state.getGameId());
+        } else {
+            sendError(session, "房间不存在");
+        }
+    }
+
+    /**
      * 处理出牌消息
      */
     public void handlePlayCard(Long userId, String username, WebSocketSession session, Object data) {

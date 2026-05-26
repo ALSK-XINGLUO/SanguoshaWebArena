@@ -1,6 +1,8 @@
 package com.sanguosha.room.service;
 
 import com.sanguosha.room.entity.Room;
+import jakarta.annotation.PostConstruct;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -10,10 +12,16 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 房间管理器，初版使用 ConcurrentHashMap 存储房间
  */
+@Slf4j
 @Component
 public class RoomManager {
 
     private final ConcurrentHashMap<String, Room> roomMap = new ConcurrentHashMap<>();
+
+    @PostConstruct
+    public void init() {
+        log.info("RoomManager initialized - all rooms cleared");
+    }
 
     public Room createRoom(String name, Long ownerId, String ownerName, String password) {
         String id = UUID.randomUUID().toString().substring(0, 8);
@@ -38,5 +46,9 @@ public class RoomManager {
 
     public void removeRoom(String roomId) {
         roomMap.remove(roomId);
+    }
+
+    public void clearAllRooms() {
+        roomMap.clear();
     }
 }

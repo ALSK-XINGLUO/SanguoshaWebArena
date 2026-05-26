@@ -44,7 +44,7 @@ public class GameState {
         this.gameLog = new CopyOnWriteArrayList<>();
         this.currentTurnIndex = 0;
         this.turnNumber = 1;
-        this.phase = "JUDGE";
+        this.phase = "PREPARE";
         this.started = false;
         this.finished = false;
     }
@@ -129,12 +129,12 @@ public class GameState {
      */
     public void nextPhase() {
         phase = switch (phase) {
+            case "PREPARE" -> "JUDGE";
             case "JUDGE" -> "DRAW";
             case "DRAW" -> "PLAY";
             case "PLAY" -> "DISCARD";
             case "DISCARD" -> "END";
-            case "END" -> "JUDGE";
-            default -> "JUDGE";
+            default -> "PREPARE";
         };
     }
 
@@ -146,7 +146,7 @@ public class GameState {
         if (currentTurnIndex == 0) {
             turnNumber++;
         }
-        phase = "JUDGE";
+        phase = "PREPARE";
         addLog("---- 第 " + turnNumber + " 回合结束，第 " + (turnNumber + 1) + " 回合开始 ----");
     }
 

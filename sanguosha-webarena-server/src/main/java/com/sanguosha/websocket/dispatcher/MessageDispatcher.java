@@ -11,11 +11,14 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.util.Map;
+import java.util.Set;
 
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class MessageDispatcher {
+
+    private static final Set<String> IGNORED_TYPES = Set.of("PING", "PONG");
 
     private final ObjectMapper objectMapper;
     private final LobbyService lobbyService;
@@ -32,6 +35,11 @@ public class MessageDispatcher {
                 return;
             }
 
+            // ignore heartbeat messages
+            if (IGNORED_TYPES.contains(type)) {
+                return;
+            }
+
             switch (type) {
                 // Room
                 case MessageType.ROOM_LIST -> lobbyService.handleRoomList(userId, username, session);
@@ -43,8 +51,10 @@ public class MessageDispatcher {
 
                 // Game
                 case MessageType.GAME_START -> lobbyService.handlePlayerReady(userId, username, session, data);
+                case MessageType.FETCH_GAME_STATE -> gameService.handleFetchGameState(userId, username, session, data);
                 case MessageType.PLAY_CARD -> gameService.handlePlayCard(userId, username, session, data);
                 case MessageType.DISCARD_CARD -> gameService.handleEndTurn(userId, username, session, data);
+                case MessageType.END_TURN -> gameService.handleEndTurn(userId, username, session, data);
                 case MessageType.PENDING_RESPONSE -> gameService.handleResponse(userId, username, session, data);
 
                 default -> sendError(session, "未知消息类型: " + type);

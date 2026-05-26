@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     `username` VARCHAR(50) NOT NULL COMMENT '用户名',
     `password` VARCHAR(255) NOT NULL COMMENT '密码(SHA-256)',
     `nickname` VARCHAR(50) DEFAULT NULL COMMENT '昵称',
+    `avatar` VARCHAR(255) DEFAULT NULL COMMENT '头像URL',
     `level` INT DEFAULT 1 COMMENT '等级',
     `win_count` INT DEFAULT 0 COMMENT '胜利场次',
     `lose_count` INT DEFAULT 0 COMMENT '失败场次',

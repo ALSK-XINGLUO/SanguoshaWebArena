@@ -18,12 +18,36 @@ import java.util.concurrent.ConcurrentHashMap;
 public class GameEngine {
 
     private final ConcurrentHashMap<String, GameState> games = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> roomGameIndex = new ConcurrentHashMap<>();
 
     /**
      * 获取游戏状态
      */
     public GameState getGame(String gameId) {
         return games.get(gameId);
+    }
+
+    /**
+     * 通过房间ID获取游戏
+     */
+    public GameState getGameByRoomId(String roomId) {
+        String gameId = roomGameIndex.get(roomId);
+        return gameId != null ? games.get(gameId) : null;
+    }
+
+    /**
+     * 通过用户ID查找正在进行的游戏
+     */
+    public GameState findGameByUserId(Long userId) {
+        for (GameState state : games.values()) {
+            if (state.isFinished()) continue;
+            for (var player : state.getPlayers()) {
+                if (player.getUserId().equals(userId)) {
+                    return state;
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -50,11 +74,12 @@ public class GameEngine {
         state.addLog("双方各摸4张牌");
 
         state.setStarted(true);
-        state.setPhase("JUDGE");
+        state.setPhase("PREPARE");
         state.addLog("游戏开始！" + player1Name + " vs " + player2Name);
         state.addLog(player1Name + " 先手");
 
         games.put(gameId, state);
+        roomGameIndex.put(roomId, gameId);
         return state;
     }
 
@@ -67,17 +92,22 @@ public class GameEngine {
         String phase = state.getPhase();
 
         switch (phase) {
+            case "PREPARE" -> {
+                state.addLog(current.getUsername() + " 的准备阶段");
+                state.nextPhase();
+                return processPhase(state);
+            }
             case "JUDGE" -> {
                 state.addLog(current.getUsername() + " 的判定阶段");
                 // 处理延时锦囊判定
                 if (!current.getJudgeArea().isEmpty()) {
                     GameCard judgeCard = current.getJudgeArea().get(0);
-                    // TODO: 简单判定逻辑
                     current.getJudgeArea().remove(0);
                     state.discardCard(judgeCard);
+                    state.addLog(current.getUsername() + " 判定：" + judgeCard.getCardType().getDisplayName());
                 }
                 state.nextPhase();
-                return null;
+                return processPhase(state);
             }
             case "DRAW" -> {
                 // 摸牌阶段 - 摸2张
@@ -89,13 +119,13 @@ public class GameEngine {
                     state.addLog(current.getUsername() + " 摸了 " + drawn.size() + " 张牌");
                 }
                 state.nextPhase();
-                return null;
+                return processPhase(state);
             }
             case "PLAY" -> {
                 state.addLog(current.getUsername() + " 的出牌阶段");
                 // 重置出牌阶段状态
                 current.resetTurnState();
-                state.nextPhase();
+                // 不出牌直接结束出牌阶段，可通过 endPlayPhase 触发进入DISCARD
                 return null;
             }
             case "DISCARD" -> {
@@ -118,12 +148,12 @@ public class GameEngine {
                     return action;
                 }
                 state.nextPhase();
-                return null;
+                return processPhase(state);
             }
             case "END" -> {
                 state.addLog(current.getUsername() + " 的回合结束");
                 state.nextTurn();
-                // 新回合从JUDGE开始
+                // 新回合从PREPARE开始
                 return processPhase(state);
             }
             default -> {

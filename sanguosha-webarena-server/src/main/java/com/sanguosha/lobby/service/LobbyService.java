@@ -64,12 +64,6 @@ public class LobbyService {
      * 加入房间
      */
     public void handleJoinRoom(Long userId, String username, WebSocketSession session, Object data) {
-        Room existing = roomManager.findRoomByUserId(userId);
-        if (existing != null) {
-            sendError(session, "你已在房间 " + existing.getName() + " 中");
-            return;
-        }
-
         @SuppressWarnings("unchecked")
         Map<String, Object> params = (Map<String, Object>) data;
         String roomId = (String) params.get("roomId");
@@ -77,6 +71,20 @@ public class LobbyService {
         Room room = roomManager.getRoom(roomId);
         if (room == null) {
             sendError(session, "房间不存在");
+            return;
+        }
+
+        // If user is already in this room, just send current state back
+        boolean alreadyInRoom = room.getPlayers().stream().anyMatch(p -> p.getUserId().equals(userId));
+        if (alreadyInRoom) {
+            sendMessage(session, MessageType.ROOM_UPDATE, roomToDetailMap(room));
+            return;
+        }
+
+        // Check if user is in a different room
+        Room existing = roomManager.findRoomByUserId(userId);
+        if (existing != null) {
+            sendError(session, "你已在房间 " + existing.getName() + " 中");
             return;
         }
 
@@ -105,7 +113,9 @@ public class LobbyService {
         slot.setSlotIndex(room.getPlayers().size());
         room.getPlayers().add(slot);
 
-        // notify all players in room
+        // notify joining user first (so they can navigate to room page)
+        sendMessage(session, MessageType.JOIN_ROOM, Map.of("roomId", roomId));
+        // then notify all players with updated room state
         broadcastToRoom(room, MessageType.ROOM_UPDATE, roomToDetailMap(room));
         log.info("用户 {} 加入房间 {}", username, roomId);
     }
