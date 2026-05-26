@@ -1,0 +1,6 @@
+com/sanguosha/game/card/GameCard.class
+com/sanguosha/game/card/CardType.class
+com/sanguosha/common/result/Result.class
+com/sanguosha/websocket/message/MessageType.class
+com/sanguosha/websocket/session/UserSessionRegistry.class
+com/sanguosha/game/card/GameCard$Suit.class
