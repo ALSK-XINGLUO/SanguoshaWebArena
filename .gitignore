@@ -13,6 +13,12 @@ out/
 .env.local
 .env.*.local
 
+# Spring Boot configuration (contains sensitive DB credentials)
+application.yml
+application-*.yml
+application.properties
+application-*.properties
+
 # IDE and editor files
 .vscode/
 .idea/
