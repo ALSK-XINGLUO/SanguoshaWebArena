@@ -3,6 +3,7 @@ package com.sanguosha.game.player;
 import com.sanguosha.game.card.CardType;
 import com.sanguosha.game.card.GameCard;
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -11,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * 游戏中的玩家状态
  */
 @Data
+@Slf4j
 public class GamePlayer {
     private Long userId;
     private String username;
@@ -117,10 +119,13 @@ public class GamePlayer {
      * 受到伤害
      */
     public int takeDamage(int damage) {
+        log.info("[PLAYER takeDamage] userId={} username={} damage={} hpBefore={} hpAfter={}",
+                userId, username, damage, currentHp, Math.max(0, currentHp - damage));
         currentHp -= damage;
         if (currentHp <= 0) {
             currentHp = 0;
             alive = false;
+            log.info("[PLAYER takeDamage] userId={} DIED", userId);
         }
         return damage;
     }
@@ -252,7 +257,14 @@ public class GamePlayer {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", card.getId());
         m.put("type", card.getCardType().name());
-        m.put("displayName", card.getCardType().getDisplayName());
+        // 火杀/雷杀显示名称
+        m.put("displayName", card.getCardType() == CardType.SHA
+                ? switch (card.getNature()) {
+                    case FIRE -> "火杀";
+                    case THUNDER -> "雷杀";
+                    default -> "杀";
+                }
+                : card.getCardType().getDisplayName());
         m.put("category", card.getCardType().getCategory());
         m.put("suit", card.getSuit().getSymbol());
         m.put("suitName", card.getSuit().name());

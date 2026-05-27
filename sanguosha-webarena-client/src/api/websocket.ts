@@ -9,11 +9,15 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let messageQueue: string[] = [];
 
 export function connect(token: string) {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (ws) {
+    console.log(`[WS_CONNECT] called, current ws.readyState=${ws.readyState} (0=CONNECTING 1=OPEN 2=CLOSING 3=CLOSED)`);
+  }
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
 
   ws = new WebSocket(`${WS_URL}?token=${token}`);
 
   ws.onopen = () => {
+    console.log(`[WS_EVENT] onopen @${Date.now()}`);
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -32,10 +36,17 @@ export function connect(token: string) {
     }, 30000);
   };
 
+let _recvCounter = 0;
+
   ws.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
       const { type, data } = msg;
+      const counter = ++_recvCounter;
+      const actionInfo = data?.gameState?.pendingAction
+        ? ` actionType=${data.gameState.pendingAction.actionType} actionId=${data.gameState.pendingAction.actionId}`
+        : '';
+      console.log(`[WS_RECV #${counter} @${Date.now()}] type=${type}${actionInfo} handlerCount=${handlers.get(type)?.length ?? 0}`);
       const typeHandlers = handlers.get(type) || [];
       typeHandlers.forEach((fn) => fn(type, data));
       // also notify wildcard handlers
@@ -47,6 +58,7 @@ export function connect(token: string) {
   };
 
   ws.onclose = () => {
+    console.log(`[WS_EVENT] onclose @${Date.now()}`);
     if (heartbeatTimer) clearInterval(heartbeatTimer);
     // auto reconnect after 3s
     if (token) {
@@ -70,12 +82,24 @@ export function disconnect() {
   handlers.clear();
 }
 
+let _sendCounter = 0;
+
 export function send(type: string, data?: any) {
   const msg = JSON.stringify({ type, data: data || {} });
+  const counter = ++_sendCounter;
+  const ts = Date.now();
+  const caller = (new Error()).stack?.split('\n')[2]?.trim() || 'unknown';
+  // Log before send for diagnostic tracing
+  const actionDetail = data?.actionId ? ` actionId=${data.actionId}` :
+    data?.cardId ? ` cardId=${data.cardId}` : '';
+  const sendInfo = `[WS_SEND #${counter} @${ts}] type=${type}${actionDetail} state=${ws?.readyState ?? 'null'} caller=${caller}`;
+  console.log(sendInfo);
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(msg);
   } else {
     messageQueue.push(msg);
+    console.log(`[WS_QUEUE #${counter}] ${type} (ws=${ws?.readyState ?? 'null'})`);
   }
 }
 

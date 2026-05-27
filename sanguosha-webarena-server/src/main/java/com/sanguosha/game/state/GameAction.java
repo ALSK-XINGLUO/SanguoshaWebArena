@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 待玩家响应的动作（如需要出闪、出杀、选择目标等）
@@ -18,6 +19,7 @@ public class GameAction {
     public static final String WAIT_SKILL_RESPONSE = "WAIT_SKILL_RESPONSE";
     public static final String WAIT_CONVERT_CARD = "WAIT_CONVERT_CARD";
 
+    private String actionId = UUID.randomUUID().toString();  // 唯一动作ID，防止重复消费
     private String actionType;         // 动作类型: RESPOND_SHA, RESPOND_SHAN, CHOOSE_TARGET, DISCARD, DYING_REQUIRE_TAO, WAIT_WUXIE_RESPONSE, WAIT_EQUIP_TRIGGER, etc.
     private String sourceCardId;       // 触发此动作的卡牌ID
     private Long sourcePlayerId;       // 触发此动作的玩家
@@ -30,6 +32,7 @@ public class GameAction {
 
     public Map<String, Object> toClientMap() {
         Map<String, Object> map = new LinkedHashMap<>();
+        map.put("actionId", actionId);
         map.put("actionType", actionType);
         map.put("sourceCardId", sourceCardId);
         map.put("sourcePlayerId", sourcePlayerId);

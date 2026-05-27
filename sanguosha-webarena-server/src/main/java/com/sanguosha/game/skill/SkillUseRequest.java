@@ -29,6 +29,9 @@ public class SkillUseRequest {
     /** 是否为响应模式（在 pendingAction 期间使用） */
     private boolean isResponse;
 
+    /** 响应的 pending action ID，用于防止重复消费 */
+    private String actionId;
+
     /** 响应的 pending action 类型 */
     private String respondToActionType;
 

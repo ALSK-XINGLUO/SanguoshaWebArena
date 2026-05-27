@@ -1029,7 +1029,7 @@ public class GameEngine {
     }
 
     /**
-     * 火攻
+     * 火攻 - 第一步：目标选择一张手牌展示
      */
     private ActionResult useHuoGong(GameState state, GamePlayer player, GameCard card,
                                     String targetUserId, String targetCardId) {
@@ -1041,23 +1041,67 @@ public class GameEngine {
         player.removeHandCard(card.getId());
         state.discardCard(card);
 
-        // 随机展示目标一张手牌
-        Random random = new Random();
-        int idx = random.nextInt(target.getHandCards().size());
-        GameCard revealedCard = target.getHandCards().get(idx);
+        // 目标选择一张手牌展示
+        List<String> targetCardIds = target.getHandCards().stream()
+                .map(GameCard::getId).toList();
 
-        // 让使用者弃一张手牌
-        List<String> attackerCardIds = player.getHandCards().stream()
+        GameAction action = new GameAction();
+        action.setActionType("HUO_GONG_SHOW");
+        action.setSourcePlayerId(player.getUserId());
+        action.setOptionalCardIds(targetCardIds);
+        action.setOptionalCards(cardIdsToClientMap(state, targetCardIds));
+        action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
+        action.setMessage("请选择一张手牌展示（火攻）");
+
+        Map<String, Object> extra = new HashMap<>();
+        extra.put("attackerId", player.getUserId());
+        extra.put("attackerName", player.getUsername());
+        action.setExtraData(extra);
+
+        state.setPendingAction(action);
+        state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了火攻，等待展示手牌");
+        return success("火攻已使用，请目标展示手牌", action);
+    }
+
+    /**
+     * 火攻 - 第二步：目标展示手牌后由使用者弃同花色牌
+     */
+    @SuppressWarnings("unchecked")
+    private ActionResult handleHuoGongShow(GameState state, Long userId, String cardId, GameAction pending) {
+        GamePlayer target = findPlayerById(state, userId);
+        if (target == null) return failure("未找到玩家");
+
+        Map<String, Object> extra = (Map<String, Object>) pending.getExtraData();
+        Long attackerId = extra.get("attackerId") instanceof Number
+                ? ((Number) extra.get("attackerId")).longValue() : null;
+        GamePlayer attacker = findPlayerById(state, attackerId);
+        if (attacker == null) return failure("未找到攻击者");
+
+        if (cardId == null) {
+            state.addLog(target.getUsername() + " 跳过了火攻展示");
+            state.setPendingAction(null);
+            return success("火攻已取消");
+        }
+
+        GameCard revealedCard = findCard(target, cardId);
+        if (revealedCard == null) return failure("无效的卡牌");
+
+        // 展示卡牌（不弃置，只展示花色信息）
+        state.addLog(target.getUsername() + " 展示了 " + revealedCard.getDisplayName() +
+                "（" + revealedCard.getSuit().getSymbol() + "" + revealedCard.getNumberDisplay() + "）");
+
+        // 让使用者弃一张同花色手牌
+        List<String> attackerCardIds = attacker.getHandCards().stream()
                 .map(GameCard::getId).toList();
 
         GameAction action = new GameAction();
         action.setActionType("HUO_GONG_DISCARD");
-        action.setSourcePlayerId(player.getUserId());
+        action.setSourcePlayerId(attackerId);
         action.setOptionalCardIds(attackerCardIds);
         action.setOptionalCards(cardIdsToClientMap(state, attackerCardIds));
-        action.setOptionalTargetIds(Collections.singletonList(player.getUserId()));
+        action.setOptionalTargetIds(Collections.singletonList(attackerId));
         action.setMessage("火攻：" + target.getUsername() + " 展示了 " + revealedCard.getDisplayName() +
-                "，请弃置一张相同花色的手牌");
+                "（" + revealedCard.getSuit().getSymbol() + "），请弃置一张相同花色的手牌或跳过");
         action.setExtraData(Map.of(
                 "effectType", "HUO_GONG",
                 "targetId", target.getUserId(),
@@ -1065,8 +1109,8 @@ public class GameEngine {
         ));
 
         state.setPendingAction(action);
-        state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了火攻");
-        return success("火攻已使用，请弃置一张手牌", action);
+        state.addLog("等待 " + attacker.getUsername() + " 弃同花色牌");
+        return success("卡牌已展示，等待弃牌", action);
     }
 
     /**
@@ -1115,10 +1159,12 @@ public class GameEngine {
         if (cardId != null) {
             GameCard discardCard = findCard(player, cardId);
             if (discardCard == null) return failure("无效的卡牌");
-            player.removeHandCard(cardId);
-            state.discardCard(discardCard);
 
+            // 先检查花色是否匹配，匹配才弃牌
             if (discardCard.getSuit().name().equals(revealedSuit)) {
+                player.removeHandCard(cardId);
+                state.discardCard(discardCard);
+
                 // 花色相同，成功
                 target.takeDamage(1);
                 state.addLog("火攻成功！" + target.getUsername() + "受到1点火伤害");
@@ -1132,7 +1178,9 @@ public class GameEngine {
                 if (dying != null) return dying;
                 state.checkGameOver();
             } else {
-                state.addLog("火攻失败，" + discardCard.getSuit().getSymbol() + "≠已展示花色");
+                state.addLog("火攻失败，" + discardCard.getSuit().getSymbol() + "≠已展示花色，卡牌未弃置");
+                state.setPendingAction(null);
+                return success("火攻失败，花色不匹配");
             }
         } else {
             state.addLog(player.getUsername() + " 跳过了火攻");
@@ -1416,9 +1464,16 @@ public class GameEngine {
             return success("无有效目标");
         }
 
-        // 动态扫描：每次调用重新检查，任何玩家手牌有无懈才打开窗口
+        // 动态扫描：每次调用重新检查
         if (!hasAnyWuxie(state)) {
-            // 无人有无懈可击，直接结算
+            if (isAoe) {
+                // AOE 无快路径：走正常无懈框架确保 RESPOND 动作有 aoeContext
+                // advanceToNextWuxieResponder 将耗尽队列（无人有无懈）
+                // → resolveWuxieChain → resolveAoeTarget → 创建带 aoeContext 的 RESPOND 动作
+                return openWuxieForTarget(state, player.getUserId(), card, type,
+                        targetUserId, targetCardId, targets, 0, true);
+            }
+            // 非AOE锦囊：无人有无懈，直接结算
             state.getTempCards().clear();
             ActionResult result = effect.execute(state, player, card, targetUserId, targetCardId);
             if (result.success()) {
@@ -1492,6 +1547,7 @@ public class GameEngine {
             extraData.put("wuguShownIds", shownIds);
             extraData.put("wuguCardInfos", wuguCardInfos);
             extraData.put("wuguCancelledTargets", new ArrayList<String>());
+            extraData.put("wuguAlreadyPicked", new ArrayList<String>());
         }
 
         // 构建顺序响应队列并推进至首个有资格响应者
@@ -1963,33 +2019,47 @@ public class GameEngine {
                                     Map<String, Object> extra) {
         if (trickCardType == CardType.WU_GU) {
             List<String> cancelledTargets = (List<String>) extra.get("wuguCancelledTargets");
-            List<String> shownIds = (List<String>) extra.get("wuguShownIds");
-            List<Map<String, Object>> wuguCardInfos = (List<Map<String, Object>>) extra.get("wuguCardInfos");
+            List<String> alreadyPicked = (List<String>) extra.get("wuguAlreadyPicked");
+            final List<String> effectivePicked = alreadyPicked != null ? alreadyPicked : new ArrayList<>();
+
+            // 已有玩家选过牌后恢复：使用当前 tempCards，而非原始全量列表
+            List<String> resumeCardIds = (List<String>) extra.get("wuguCurrentCardIds");
+            List<Map<String, Object>> resumeCardInfos = null;
+            if (resumeCardIds != null) {
+                resumeCardInfos = (List<Map<String, Object>>) extra.get("wuguCurrentCardInfos");
+            }
+
+            List<String> cardIds = resumeCardIds != null ? resumeCardIds
+                    : (List<String>) extra.get("wuguShownIds");
+            List<Map<String, Object>> cardInfos = resumeCardInfos != null ? resumeCardInfos
+                    : (List<Map<String, Object>>) extra.get("wuguCardInfos");
 
             List<Long> filteredOrder = state.getAlivePlayers().stream()
                     .map(GamePlayer::getUserId)
                     .filter(id -> !cancelledTargets.contains(String.valueOf(id)))
+                    .filter(id -> !effectivePicked.contains(String.valueOf(id)))
                     .toList();
 
-            if (filteredOrder.isEmpty()) {
+            if (filteredOrder.isEmpty() || cardIds.isEmpty()) {
                 state.getTempCards().clear();
                 state.setPendingAction(null);
-                state.addLog("所有玩家被无懈可击，五谷丰登无效");
-                return success("五谷丰登无效");
+                state.addLog("所有玩家已选完或被无懈可击，五谷丰登结束");
+                return success("五谷丰登结束");
             }
 
             GameAction action = new GameAction();
             action.setActionType("CHOOSE_WUGU_CARD");
             action.setSourcePlayerId(extra.get("sourcePlayerId") instanceof Number
                     ? ((Number) extra.get("sourcePlayerId")).longValue() : null);
-            action.setOptionalCardIds(shownIds);
-            action.setOptionalCards(wuguCardInfos);
+            action.setOptionalCardIds(cardIds);
+            action.setOptionalCards(cardInfos);
             action.setMessage("请选择一张牌（五谷丰登）");
             action.setOptionalTargetIds(Collections.singletonList(filteredOrder.get(0)));
-            action.setExtraData(Map.of(
-                    "pickerOrder", filteredOrder,
-                    "pickerIndex", 0
-            ));
+            Map<String, Object> chooserExtra = new LinkedHashMap<>();
+            chooserExtra.put("pickerOrder", new ArrayList<>(filteredOrder));
+            chooserExtra.put("pickerIndex", 0);
+            chooserExtra.put("aoeOriginalExtra", extra);
+            action.setExtraData(chooserExtra);
             state.setPendingAction(action);
             state.addLog("五谷丰登选牌开始");
             return success("五谷丰登选牌开始", action);
@@ -2013,9 +2083,17 @@ public class GameEngine {
     /**
      * 处理玩家响应（出闪/出杀等）
      */
-    public ActionResult handleResponse(GameState state, Long userId, String cardId, String targetUserId) {
+    public ActionResult handleResponse(GameState state, Long userId, String cardId, String targetUserId, String requestActionId) {
         GameAction pending = state.getPendingAction();
         if (pending == null) return failure("没有待处理的响应");
+
+        // actionId 校验：确保消费的是当前 pendingAction，防止 WebSocket 重复请求
+        log.info("[ENGINE handleResponse] userId={} cardId={} requestActionId={} pendingActionId={} pendingType={}",
+                userId, cardId, requestActionId, pending.getActionId(), pending.getActionType());
+        if (requestActionId == null || !requestActionId.equals(pending.getActionId())) {
+            log.info("[ENGINE handleResponse FAIL] actionId mismatch: request={} pending={}", requestActionId, pending.getActionId());
+            return failure("响应已过期");
+        }
 
         // 验证响应者
         if (!pending.getOptionalTargetIds().contains(userId)) {
@@ -2039,6 +2117,7 @@ public class GameEngine {
             case "CHOOSE_WUGU_CARD" -> handleChooseWuguCard(state, userId, cardId, pending);
             case "DISCARD" -> handleDiscardPhase(state, userId, cardId, pending);
             case "DYING_REQUIRE_TAO" -> handleDying(state, userId, cardId, pending);
+            case "HUO_GONG_SHOW" -> handleHuoGongShow(state, userId, cardId, pending);
             case "HUO_GONG_DISCARD" -> handleHuoGongDiscard(state, userId, cardId, pending);
             case "WAIT_EQUIP_TRIGGER" -> handleEquipTrigger(state, userId, cardId, pending);
             case "WAIT_WUXIE_RESPONSE" -> handleWuxieResponse(state, userId, cardId, pending);
@@ -2054,7 +2133,13 @@ public class GameEngine {
             Long aoeSource = ((Number) aoeContext.get("sourcePlayerId")).longValue();
             @SuppressWarnings("unchecked")
             Map<String, Object> aoeExtra = (Map<String, Object>) aoeContext.get("aoeOriginalExtra");
+            log.info("[AOE CONTINUATION] type={} targets={} index={}/{} hasWuxie={}", aoeType, aoeTargets, aoeIndex, aoeTargets.size(), hasAnyWuxie(state));
             return advanceAoeToNext(state, aoeType, aoeSource, aoeExtra, aoeTargets, aoeIndex);
+        }
+
+        if (aoeContext != null && result.success()) {
+            log.info("[AOE CONTINUATION SKIPPED] pendingActionIsNull={} isFinished={} aoeContext={}",
+                    state.getPendingAction() == null, state.isFinished(), aoeContext);
         }
 
         return result;
@@ -2077,6 +2162,67 @@ public class GameEngine {
                 (int) extra.get("damage") : 1;
         String effectType = extra != null ? (String) extra.get("effectType") : null;
 
+        log.info("[ENGINE handleRespondShan] userId={} cardId={} effectType={} hasJiuEffect={} baseDamage={} pendingActionId={}",
+                userId, cardId, effectType, hasJiuEffect, baseDamage, pending.getActionId());
+
+        // === 万箭齐发：单独的 RESPOND_SHAN 分支，不走杀逻辑 ===
+        if ("WAN_JIAN".equals(effectType)) {
+            if (cardId != null) {
+                GameCard shanCard = findCard(responder, cardId);
+                if (shanCard == null || shanCard.getCardType() != CardType.SHAN) {
+                    return failure("无效的闪");
+                }
+                boolean needShan = true;
+                if (responder.getArmor() != null && responder.getArmor().getCardType() == CardType.BA_GUA) {
+                    GameCard judgeCard = state.drawCard();
+                    if (judgeCard != null) {
+                        state.discardCard(judgeCard);
+                        if (judgeCard.isRed()) {
+                            needShan = false;
+                            state.addLog(responder.getUsername() + " 的八卦阵判定成功，视为出闪");
+                        } else {
+                            state.addLog(responder.getUsername() + " 的八卦阵判定失败");
+                        }
+                    }
+                }
+                if (needShan) {
+                    responder.removeHandCard(cardId);
+                    state.discardCard(shanCard);
+                }
+                state.addLog(responder.getUsername() + " 打出闪，响应万箭齐发");
+                state.setPendingAction(null);
+                return success("出闪成功");
+            } else {
+                int damage = baseDamage;
+                if (responder.getArmor() != null && responder.getArmor().getCardType() == CardType.BAI_YIN) {
+                    damage = Math.min(damage, 1);
+                    state.addLog("白银狮子将伤害降为1");
+                }
+                log.info("[ENGINE WAN_JIAN DAMAGE] userId={} damage={} responder={} pendingActionId={} caller={}",
+                        userId, damage, responder.getUsername(), pending.getActionId(),
+                        Thread.currentThread().getStackTrace()[2]);
+                responder.takeDamage(damage);
+                state.addLog(responder.getUsername() + " 未响应万箭齐发，受到" + damage + "点伤害");
+
+                ActionResult dying = checkDying(state, responder);
+                if (dying != null) return dying;
+                state.checkGameOver();
+
+                if (!state.isFinished()) {
+                    GameAction oldAction = state.getPendingAction();
+                    fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, responder, null, damage,
+                            Map.of("effectType", "WAN_JIAN")));
+                    GameAction newAction = state.getPendingAction();
+                    if (newAction != null && newAction != oldAction) {
+                        return success("万箭齐发命中，触发事件", newAction);
+                    }
+                }
+                state.setPendingAction(null);
+                return success("万箭齐发命中");
+            }
+        }
+
+        // ========== 杀逻辑（effectType == null / "SHA"）==========
         if (cardId != null) {
             // 出了闪
             GameCard shanCard = findCard(responder, cardId);
@@ -2164,8 +2310,8 @@ public class GameEngine {
                 state.addLog("酒效果使伤害+1");
             }
 
-            // 古锭刀：目标无手牌时伤害+1
-            if (attacker.getWeapon() != null && attacker.getWeapon().getCardType() == CardType.GU_DING_DAO
+            // 古锭刀：仅对杀有效，不对万箭/南蛮生效
+            if (effectType == null && attacker.getWeapon() != null && attacker.getWeapon().getCardType() == CardType.GU_DING_DAO
                     && responder.getHandCards().isEmpty()) {
                 damage += 1;
                 state.addLog("古锭刀效果：目标无手牌，伤害+1");
@@ -2223,11 +2369,12 @@ public class GameEngine {
             if (rawShaResolveId != null) {
                 String damageKey = rawShaResolveId + ":" + responder.getUserId();
                 if (state.getResolvedDamageKeys().contains(damageKey)) {
-                    state.addLog("跳过重复伤害处理（同一杀已命中目标）");
+                    state.addLog("跳过重复伤害处理（同一杀已命中目标, key=" + damageKey + "）");
                     state.setPendingAction(null);
                     return success("重复伤害已跳过");
                 }
                 state.getResolvedDamageKeys().add(damageKey);
+                state.addLog("记录伤害 key=" + damageKey);
             }
 
             // 白银狮子
@@ -2239,8 +2386,10 @@ public class GameEngine {
             }
 
             responder.takeDamage(damage);
-            state.addLog(responder.getUsername() + " 受到" + damage + "点伤害");
-            state.addLog(attacker.getUsername() + " 的杀命中");
+            state.addLog(responder.getUsername() + " 受到" + damage + "点伤害" +
+                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
+            state.addLog(attacker.getUsername() + " 的杀命中" +
+                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
 
             // 铁索连环传导
             String natureStr = extra != null ? (String) extra.get("nature") : "NORMAL";
@@ -2270,11 +2419,13 @@ public class GameEngine {
 
             // 游戏未结束时触发伤害事件（麒麟弓等装备效果）
             if (!state.isFinished()) {
+                GameAction oldAction = state.getPendingAction();
                 fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, responder, null, damage,
                         Map.of("effectType", effectType != null ? effectType : "SHA")));
-                // 如果触发器设置了 pending action，保留它
-                if (state.getPendingAction() != null) {
-                    return success("命中，" + damage + "点伤害，触发装备效果", state.getPendingAction());
+                GameAction newAction = state.getPendingAction();
+                // 仅当事件处理器设置了新的 pendingAction（不是原先的 RESPOND_SHAN）时才保留
+                if (newAction != null && newAction != oldAction) {
+                    return success("命中，" + damage + "点伤害，触发装备效果", newAction);
                 }
             }
 
@@ -2620,7 +2771,8 @@ public class GameEngine {
                 damage += 1;
                 state.addLog("酒效果使伤害+1");
             }
-            if (attacker.getWeapon() != null && attacker.getWeapon().getCardType() == CardType.GU_DING_DAO
+            // 古锭刀：仅对杀有效（effectTypeStr = null = 普通杀）
+            if (effectTypeStr == null && attacker.getWeapon() != null && attacker.getWeapon().getCardType() == CardType.GU_DING_DAO
                     && target.getHandCards().isEmpty()) {
                 damage += 1;
                 state.addLog("古锭刀效果：目标无手牌，伤害+1");
@@ -2773,6 +2925,10 @@ public class GameEngine {
             // 响应模式（RESPOND_SHA中作为杀打出）
             GameAction currentPending = state.getPendingAction();
             if (currentPending == null) return failure("没有待处理的响应");
+            // actionId 校验：防止 USE_SKILL 重复消费同个 pendingAction
+            if (req.getActionId() == null || !req.getActionId().equals(currentPending.getActionId())) {
+                return failure("响应已过期");
+            }
             state.setPendingAction(null);
             return onShaPlayed(state, player, currentPending,
                     player.getUsername() + " 使用丈八蛇矛出杀");
@@ -2933,6 +3089,48 @@ public class GameEngine {
             // 4. 切换到下一玩家或结束
             int nextIndex = currentIndex + 1;
             if (nextIndex < pickerOrder.size() && !state.getTempCards().isEmpty()) {
+                // 动态检测：如果当前有玩家持有无懈可击（可能刚从此五谷中拿到），打开无懈窗口
+                if (hasAnyWuxie(state)) {
+                    // 获取原始 AOE 上下文，继续五谷的逐目标无懈流程
+                    Map<String, Object> aoeExtra = (Map<String, Object>) extra.get("aoeOriginalExtra");
+                    if (aoeExtra != null) {
+                        // 记录已选牌玩家，finishAoe 将排除他们
+                        List<String> alreadyPicked = (List<String>) aoeExtra.get("wuguAlreadyPicked");
+                        alreadyPicked.add(String.valueOf(userId));
+
+                        // 保存当前剩余卡牌快照（已有牌被选走）
+                        List<String> remainingIds = state.getTempCards().stream().map(GameCard::getId).toList();
+                        List<Map<String, Object>> remainingInfos = state.getTempCards().stream().map(this::cardToClientMap).toList();
+                        aoeExtra.put("wuguCurrentCardIds", remainingIds);
+                        aoeExtra.put("wuguCurrentCardInfos", remainingInfos);
+
+                        // 剩余待选玩家作为新目标，重置无懈栈
+                        List<String> remainingTargets = new ArrayList<>();
+                        for (int i = nextIndex; i < pickerOrder.size(); i++) {
+                            remainingTargets.add(String.valueOf(pickerOrder.get(i)));
+                        }
+                        aoeExtra.put("pendingTargetUserIds", remainingTargets);
+                        aoeExtra.put("currentTargetIndex", 0);
+                        aoeExtra.put("wuxieStack", new ArrayList<String>());
+                        aoeExtra.put("respondedSkipIds", new ArrayList<Long>());
+
+                        // 进入无懈框架：无人有无懈则跳过 → resolveAoeTarget → finishAoe
+                        return advanceToNextWuxieResponder(state, aoeExtra,
+                                aoeExtra.get("sourcePlayerId") instanceof Number
+                                        ? ((Number) aoeExtra.get("sourcePlayerId")).longValue() : null);
+                    }
+                }
+
+                // 继续正常选牌
+                // 在原始 aoeExtra 中记录此玩家已选牌，确保后续可能的 wuxie 重入时
+                // finishAoe 能正确排除已选玩家
+                Map<String, Object> aoeOriginal = (Map<String, Object>) extra.get("aoeOriginalExtra");
+                if (aoeOriginal != null) {
+                    List<String> alreadyPickedAoe = (List<String>) aoeOriginal.get("wuguAlreadyPicked");
+                    if (alreadyPickedAoe != null) {
+                        alreadyPickedAoe.add(String.valueOf(userId));
+                    }
+                }
                 Object nextId = pickerOrder.get(nextIndex);
                 Long nextPickerId = nextId instanceof Number ? ((Number) nextId).longValue() : null;
                 if (nextPickerId == null) {
@@ -2949,10 +3147,11 @@ public class GameEngine {
                 newAction.setOptionalCards(remainingInfos);
                 newAction.setMessage("请选择一张牌（五谷丰登）");
                 newAction.setOptionalTargetIds(Collections.singletonList(nextPickerId));
-                newAction.setExtraData(Map.of(
-                        "pickerOrder", pickerOrder,
-                        "pickerIndex", nextIndex
-                ));
+                Map<String, Object> nextExtra = new LinkedHashMap<>();
+                nextExtra.put("pickerOrder", new ArrayList<>(pickerOrder));
+                nextExtra.put("pickerIndex", nextIndex);
+                nextExtra.put("aoeOriginalExtra", extra.get("aoeOriginalExtra"));
+                newAction.setExtraData(nextExtra);
 
                 state.setPendingAction(newAction);
                 return success("选牌成功，等待下一位玩家选牌", newAction);
@@ -3018,8 +3217,8 @@ public class GameEngine {
             return failure("不是你需要响应");
         }
 
-        // 调用handleResponse with null cardId
-        return handleResponse(state, userId, null, null);
+        // 调用handleResponse携带当前 actionId
+        return handleResponse(state, userId, null, null, pending.getActionId());
     }
 
     /**

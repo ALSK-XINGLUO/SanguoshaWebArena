@@ -51,6 +51,7 @@ interface GameStateDTO {
 }
 
 interface PendingActionDTO {
+  actionId: string;
   actionType: string;
   sourceCardId: string | null;
   sourcePlayerId: number;
@@ -101,6 +102,8 @@ export default function GamePage() {
   const [logs, setLogs] = useState<string[]>([]);
   const [gameOver, setGameOver] = useState(false);
   const [wuguSubmitting, setWuguSubmitting] = useState(false);
+  const [responseSubmitting, setResponseSubmitting] = useState(false);
+  const [testChangeHandSubmitting, setTestChangeHandSubmitting] = useState(false);
   const [skillMode, setSkillMode] = useState<string | null>(null);
   const [selectedSkillCardIds, setSelectedSkillCardIds] = useState<string[]>([]);
   const [selectedTargetIds, setSelectedTargetIds] = useState<number[]>([]);
@@ -115,10 +118,21 @@ export default function GamePage() {
 
   useEffect(() => {
     const unsubGameState = on('GAME_STATE', (_, data) => {
+      // [DIAG] 前端 GAME_STATE 同步日志：跟踪 pendingAction 生命周期
+      try {
+        console.log(`[FE GAME_STATE] old pendingAction=${gs?.pendingAction?.actionType ?? 'null'} old actionId=${gs?.pendingAction?.actionId ?? 'null'}`);
+        if (data.gameState && data.gameState.pendingAction) {
+          console.log(`[FE GAME_STATE] new pendingAction=${data.gameState.pendingAction.actionType} new actionId=${data.gameState.pendingAction.actionId} targetUserId=${data.gameState.pendingAction.optionalTargetIds?.[0] ?? 'null'}`);
+        } else {
+          console.log(`[FE GAME_STATE] new pendingAction=null`);
+        }
+      } catch (e) { /* logging only */ }
       if (data.gameState) {
         const dto = data.gameState as GameStateDTO;
         setGs(dto);
         setWuguSubmitting(false);
+        setResponseSubmitting(false);
+        setTestChangeHandSubmitting(false);
         setSelectedCardId(null);
         setSkillMode(null);
         setSelectedSkillCardIds([]);
@@ -146,14 +160,16 @@ export default function GamePage() {
         if (dto.log) setLogs(dto.log);
       }
       if (data.winnerName) {
-        setLogs((prev) => [...prev, `🏆 游戏结束！${data.winnerName} 获胜！`]);
+        setLogs((prev) => prev.includes(data.winnerName) ? prev : [...prev, `🏆 游戏结束！${data.winnerName} 获胜！`]);
       } else {
-        setLogs((prev) => [...prev, '游戏结束']);
+        setLogs((prev) => prev.includes('游戏结束') ? prev : [...prev, '游戏结束']);
       }
     });
 
     const unsubError = on('ERROR', (_, data) => {
       showToast(data.message, 'error');
+      setResponseSubmitting(false);
+      setTestChangeHandSubmitting(false);
     });
 
     const unsubToast = on('TOAST', (_, data) => {
@@ -223,6 +239,7 @@ export default function GamePage() {
       skillCode: 'ZHANG_BA_SHE_MAO',
       selectedCardIds: selectedSkillCardIds,
       isResponse: true,
+      actionId: pendingAction?.actionId,
     });
     setSkillMode(null);
     setSelectedSkillCardIds([]);
@@ -236,17 +253,22 @@ export default function GamePage() {
   const handleConfirmPending = (cardId: string | null) => {
     if (!pendingAction || !isMyPendingAction) return;
     if (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting) return;
-    send('PENDING_RESPONSE', { gameId, cardId });
+    if (responseSubmitting && pendingAction.actionType !== 'CHOOSE_WUGU_CARD') return;
+    send('PENDING_RESPONSE', { gameId, cardId, actionId: pendingAction.actionId });
     setSelectedCardId(null);
     if (pendingAction.actionType === 'CHOOSE_WUGU_CARD') {
       setWuguSubmitting(true);
+    } else {
+      setResponseSubmitting(true);
     }
   };
 
   const handleSkipPending = () => {
     if (!pendingAction || !isMyPendingAction) return;
-    send('PENDING_RESPONSE', { gameId, cardId: null });
+    if (responseSubmitting) return;
+    send('PENDING_RESPONSE', { gameId, cardId: null, actionId: pendingAction.actionId });
     setSelectedCardId(null);
+    setResponseSubmitting(true);
   };
 
   const handleSurrender = async () => {
@@ -262,7 +284,8 @@ export default function GamePage() {
   };
 
   const handleTestChangeHand = () => {
-    if (gameOver || !gameId) return;
+    if (gameOver || !gameId || testChangeHandSubmitting) return;
+    setTestChangeHandSubmitting(true);
     send('TEST_CHANGE_HAND', { gameId, roomId });
   };
 
@@ -306,7 +329,7 @@ export default function GamePage() {
         <span>{isMyTurn ? '← 你的回合' : `${currentPlayer?.username || '对手'}的回合 →`}</span>
         {!gameOver && <button className="text-btn surrender" onClick={handleSurrender}>认输</button>}
         {!gameOver && !pendingAction && (
-          <button className="text-btn debug" onClick={handleTestChangeHand}>测试换牌</button>
+          <button className="text-btn debug" onClick={handleTestChangeHand} disabled={testChangeHandSubmitting}>{testChangeHandSubmitting ? '换牌中...' : '测试换牌'}</button>
         )}
         <button className="text-btn" onClick={handleBackToLobby}>返回大厅</button>
       </div>
@@ -339,7 +362,7 @@ export default function GamePage() {
           {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
             <div className="text-pending-cards">
               {pendingAction.optionalCards.map((card) => {
-                const isDisabled = pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting;
+                const isDisabled = pendingAction.actionType === 'CHOOSE_WUGU_CARD' ? wuguSubmitting : responseSubmitting;
                 return (
                   <button
                     key={card.id}
@@ -360,15 +383,15 @@ export default function GamePage() {
           {pendingAction.actionType === 'WAIT_EQUIP_TRIGGER' && (
             <div className="text-pending-actions">
               {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 ? (
-                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId}>
+                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId || responseSubmitting}>
                   发动
                 </button>
               ) : (
-                <button className="text-btn primary" onClick={() => handleConfirmPending('__CONFIRM__')}>
+                <button className="text-btn primary" onClick={() => handleConfirmPending('__CONFIRM__')} disabled={responseSubmitting}>
                   确认发动
                 </button>
               )}
-              <button className="text-btn" onClick={handleSkipPending}>不发动</button>
+              <button className="text-btn" onClick={handleSkipPending} disabled={responseSubmitting}>不发动</button>
             </div>
           )}
 
@@ -377,10 +400,10 @@ export default function GamePage() {
             <>
               <div className="text-pending-hint">选择手牌中的无懈可击，或点击跳过</div>
               <div className="text-pending-actions">
-                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId}>
+                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId || responseSubmitting}>
                   使用
                 </button>
-                <button className="text-btn" onClick={handleSkipPending}>跳过</button>
+                <button className="text-btn" onClick={handleSkipPending} disabled={responseSubmitting}>跳过</button>
               </div>
             </>
           )}
@@ -396,12 +419,12 @@ export default function GamePage() {
               <div className="text-pending-actions">
                 {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
                   <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
-                    disabled={!selectedCardId}>
-                    使用
+                    disabled={!selectedCardId || responseSubmitting}>
+                    {responseSubmitting ? '处理中...' : '使用'}
                   </button>
                 )}
-                <button className="text-btn" onClick={handleSkipPending}>
-                  跳过（放弃救援）
+                <button className="text-btn" onClick={handleSkipPending} disabled={responseSubmitting}>
+                  {responseSubmitting ? '处理中...' : '跳过（放弃救援）'}
                 </button>
               </div>
             </>
@@ -412,14 +435,16 @@ export default function GamePage() {
             <div className="text-pending-actions">
               {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
                 <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
-                  disabled={!selectedCardId || (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting)}>
-                  {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting ? '选择中...' : '确认'}
+                  disabled={!selectedCardId || (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting) || responseSubmitting}>
+                  {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting ? '选择中...' : responseSubmitting ? '处理中...' : '确认'}
                 </button>
               )}
-              <button className="text-btn" onClick={handleSkipPending}
-                disabled={pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting}>
-                跳过
-              </button>
+              {pendingAction.actionType !== 'CHOOSE_WUGU_CARD' && (
+                <button className="text-btn" onClick={handleSkipPending}
+                  disabled={responseSubmitting}>
+                  {responseSubmitting ? '处理中...' : '跳过'}
+                </button>
+              )}
             </div>
           )}
 

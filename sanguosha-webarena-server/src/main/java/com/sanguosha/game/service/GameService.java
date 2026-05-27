@@ -88,8 +88,8 @@ public class GameService {
             // 循环处理不需要玩家交互的阶段
             while (state.getPendingAction() == null && !state.isFinished()) {
                 // PLAY 阶段需要等待用户出牌或结束出牌，不能自动推进
+                // 不在此广播——调用者已在进入 processGamePhase 前广播了当前状态
                 if ("PLAY".equals(state.getPhase())) {
-                    broadcastGameState(room, state);
                     return;
                 }
 
@@ -187,9 +187,15 @@ public class GameService {
             return;
         }
 
-        GameEngine.ActionResult result = gameEngine.playCard(
-                state, userId, cardId, targetUserId, targetCardId, targetUserIds
-        );
+        GameEngine.ActionResult result;
+        synchronized (state) {
+            result = gameEngine.playCard(
+                    state, userId, cardId, targetUserId, targetCardId, targetUserIds
+            );
+            if (result.success()) {
+                state.setPendingAction(result.pendingAction());
+            }
+        }
 
         if (!result.success()) {
             sendError(session, result.message());
@@ -197,13 +203,6 @@ public class GameService {
         }
 
         log.info("玩家 {} 出牌: {}, 结果: {}", username, cardId, result.message());
-
-        // 如果有待处理的响应请求，状态中已包含
-        if (result.pendingAction() != null) {
-            state.setPendingAction(result.pendingAction());
-        } else {
-            state.setPendingAction(null);
-        }
 
         // 广播更新后的状态
         broadcastGameState(room, state);
@@ -228,6 +227,7 @@ public class GameService {
         String gameId = (String) params.get("gameId");
         String cardId = (String) params.get("cardId");
         String targetUserId = (String) params.get("targetUserId");
+        String actionId = (String) params.get("actionId");
 
         GameState state = gameEngine.getGame(gameId);
         if (state == null) {
@@ -241,9 +241,33 @@ public class GameService {
             return;
         }
 
-        GameEngine.ActionResult result = gameEngine.handleResponse(
-                state, userId, cardId, targetUserId
-        );
+        String pendingActionType = state.getPendingAction() != null ? state.getPendingAction().getActionType() : "null";
+        String pendingActionId = state.getPendingAction() != null ? state.getPendingAction().getActionId() : "null";
+        String pendingTargetUserId = state.getPendingAction() != null && state.getPendingAction().getOptionalTargetIds() != null
+                ? state.getPendingAction().getOptionalTargetIds().toString() : "null";
+        log.info("[HANDLE_RESPONSE ENTRY] userId={} username={} cardId={} actionId={} pendingType={} pendingActionId={} targetUserId={}",
+                userId, username, cardId, actionId, pendingActionType, pendingActionId, pendingTargetUserId);
+
+        // 对 state 加锁：保证同个 pendingAction 不被并发处理
+        // 防止双击/重复消息导致同个动作进入两次流程
+        GameEngine.ActionResult result;
+        synchronized (state) {
+            result = gameEngine.handleResponse(state, userId, cardId, targetUserId, actionId);
+            if (result.success()) {
+                state.setPendingAction(result.pendingAction());
+            }
+        }
+
+        log.info("[HANDLE_RESPONSE RESULT] userId={} success={} message={}", userId, result.success(), result.message());
+
+        // [DIAG] pendingAction 生命周期日志
+        GameAction nextPending = state.getPendingAction();
+        String nextType = nextPending != null ? nextPending.getActionType() : "null";
+        String nextId = nextPending != null ? nextPending.getActionId() : "null";
+        String nextTarget = nextPending != null && nextPending.getOptionalTargetIds() != null
+                ? nextPending.getOptionalTargetIds().toString() : "null";
+        log.info("[DIAG PENDING_LIFECYCLE] actionType={} oldActionId={} oldTargetUserId={} resultSuccess={} nextType={} nextId={} nextTarget={}",
+                pendingActionType, pendingActionId, pendingTargetUserId, result.success(), nextType, nextId, nextTarget);
 
         if (!result.success()) {
             sendError(session, result.message());
@@ -252,9 +276,6 @@ public class GameService {
 
         log.info("玩家 {} 响应: {}, 结果: {}", username,
                 cardId != null ? cardId : "跳过", result.message());
-
-        // 清除pending action或设置新的
-        state.setPendingAction(result.pendingAction());
 
         // 广播更新后的状态
         broadcastGameState(room, state);
@@ -290,7 +311,14 @@ public class GameService {
             return;
         }
 
-        GameEngine.ActionResult result = gameEngine.endPlayPhase(state, userId);
+        GameEngine.ActionResult result;
+        synchronized (state) {
+            result = gameEngine.endPlayPhase(state, userId);
+            if (result.success()) {
+                state.setPendingAction(result.pendingAction());
+            }
+        }
+
         if (!result.success()) {
             sendError(session, result.message());
             return;
@@ -298,7 +326,6 @@ public class GameService {
 
         log.info("玩家 {} 结束回合", username);
 
-        state.setPendingAction(null);
         broadcastGameState(room, state);
 
         if (state.isFinished()) {
@@ -399,22 +426,26 @@ public class GameService {
         }
 
         // 换牌逻辑：旧手牌入弃牌堆，从牌堆摸等量的牌
-        int handSize = player.getHandCards().size();
-        if (handSize == 0) {
-            handSize = 4; // 手牌为空时默认摸4张
+        List<GameCard> drawn;
+        int handSize;
+        synchronized (state) {
+            handSize = player.getHandCards().size();
+            if (handSize == 0) {
+                handSize = 4;
+            }
+
+            // 将旧手牌放入弃牌堆
+            for (GameCard c : new ArrayList<>(player.getHandCards())) {
+                state.discardCard(c);
+            }
+            player.getHandCards().clear();
+
+            // 摸新牌
+            drawn = state.drawCards(handSize);
+            player.drawCards(drawn);
+
+            state.addLog(username + " 使用测试换牌，重新获得 " + drawn.size() + " 张手牌");
         }
-
-        // 将旧手牌放入弃牌堆
-        for (GameCard c : new ArrayList<>(player.getHandCards())) {
-            state.discardCard(c);
-        }
-        player.getHandCards().clear();
-
-        // 摸新牌（牌堆不足时自动洗弃牌堆）
-        List<GameCard> drawn = state.drawCards(handSize);
-        player.drawCards(drawn);
-
-        state.addLog(username + " 使用测试换牌，重新获得 " + drawn.size() + " 张手牌");
 
         log.info("测试换牌: {} 手牌 {}→{} 张", username, handSize, drawn.size());
 
@@ -459,6 +490,7 @@ public class GameService {
         String targetUserId = (String) params.get("targetUserId");
         Boolean isResponse = (Boolean) params.get("isResponse");
         String targetCardId = (String) params.get("targetCardId");
+        String actionId = (String) params.get("actionId");
 
         SkillUseRequest request = SkillUseRequest.builder()
                 .skillCode(skillCode)
@@ -466,9 +498,16 @@ public class GameService {
                 .targetUserId(targetUserId)
                 .targetCardId(targetCardId)
                 .isResponse(isResponse != null && isResponse)
+                .actionId(actionId)
                 .build();
 
-        GameEngine.ActionResult result = gameEngine.useSkill(state, userId, request);
+        GameEngine.ActionResult result;
+        synchronized (state) {
+            result = gameEngine.useSkill(state, userId, request);
+            if (result.success()) {
+                state.setPendingAction(result.pendingAction());
+            }
+        }
 
         if (!result.success()) {
             sendError(session, result.message());
@@ -477,7 +516,7 @@ public class GameService {
 
         log.info("玩家 {} 使用技能: {}, 结果: {}", username, skillCode, result.message());
 
-        // 广播更新后的状态（技能内部已更新 pendingAction 等）
+        // 广播更新后的状态
         broadcastGameState(room, state);
 
         // 检查游戏是否结束
@@ -546,6 +585,12 @@ public class GameService {
      * 向房间内所有玩家广播游戏状态
      */
     private void broadcastGameState(Room room, GameState state) {
+        GameAction pa = state.getPendingAction();
+        String paInfo = pa != null
+                ? "type=" + pa.getActionType() + " id=" + pa.getActionId() + " target="
+                    + (pa.getOptionalTargetIds() != null ? pa.getOptionalTargetIds() : "null")
+                : "null";
+        log.info("[BROADCAST GAME_STATE] pendingAction={}", paInfo);
         for (Room.PlayerSlot player : room.getPlayers()) {
             Map<String, Object> stateData = Map.of(
                     "gameId", state.getGameId(),
