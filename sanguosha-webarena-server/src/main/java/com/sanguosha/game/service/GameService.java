@@ -166,6 +166,14 @@ public class GameService {
         String cardId = (String) params.get("cardId");
         String targetUserId = (String) params.get("targetUserId");
         String targetCardId = (String) params.get("targetCardId");
+        // 多目标支持（铁索连环等）
+        List<String> targetUserIds = null;
+        Object rawTargets = params.get("targetUserIds");
+        if (rawTargets instanceof List) {
+            targetUserIds = ((List<?>) rawTargets).stream()
+                    .map(Object::toString)
+                    .toList();
+        }
 
         GameState state = gameEngine.getGame(gameId);
         if (state == null) {
@@ -180,7 +188,7 @@ public class GameService {
         }
 
         GameEngine.ActionResult result = gameEngine.playCard(
-                state, userId, cardId, targetUserId, targetCardId
+                state, userId, cardId, targetUserId, targetCardId, targetUserIds
         );
 
         if (!result.success()) {

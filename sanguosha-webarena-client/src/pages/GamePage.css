@@ -242,6 +242,14 @@
   color: #7ee787;
 }
 
+/* ===== Tie Suo actions ===== */
+.text-tiesuo-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
+
 /* ===== Game over ===== */
 .text-gameover {
   text-align: center;

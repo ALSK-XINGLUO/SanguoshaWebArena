@@ -103,6 +103,7 @@ export default function GamePage() {
   const [wuguSubmitting, setWuguSubmitting] = useState(false);
   const [skillMode, setSkillMode] = useState<string | null>(null);
   const [selectedSkillCardIds, setSelectedSkillCardIds] = useState<string[]>([]);
+  const [selectedTargetIds, setSelectedTargetIds] = useState<number[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const me = gs?.players.find((p) => p.userId === currentUser?.userId);
@@ -121,6 +122,7 @@ export default function GamePage() {
         setSelectedCardId(null);
         setSkillMode(null);
         setSelectedSkillCardIds([]);
+        setSelectedTargetIds([]);
         if (data.gameId) setGameId(data.gameId);
         if (dto.log) setLogs(dto.log);
         if (dto.finished) setGameOver(true);
@@ -176,6 +178,7 @@ export default function GamePage() {
   const handlePlayCard = (cardId: string) => {
     if (!isMyTurn || gameOver || !isPlayPhase) return;
     setSelectedCardId((prev) => (prev === cardId ? null : cardId));
+    setSelectedTargetIds([]);
   };
 
   const handleUseCard = () => {
@@ -455,6 +458,46 @@ export default function GamePage() {
           const needsTarget = card && (card.category === '基本牌' ? card.type === 'SHA' :
             card.category === '锦囊牌' ? !['WU_ZHONG', 'TAO_YUAN'].includes(card.type) : false);
           const isOffensive = card && isOffensiveCardType(card.type);
+          const isTieSuo = card?.type === 'TIE_SUO';
+          if (isTieSuo) {
+            const toggleTarget = (uid: number) => {
+              setSelectedTargetIds(prev =>
+                prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]
+              );
+            };
+            return (
+              <div className="text-target-select">
+                <span>选择目标（可选1-2个）:</span>
+                {gs.players.filter(p => p.alive).map((p) => (
+                  <button key={p.userId}
+                    className={`text-btn ${selectedTargetIds.includes(p.userId) ? 'primary' : ''}`}
+                    onClick={() => toggleTarget(p.userId)}>
+                    {p.username}{selectedTargetIds.includes(p.userId) ? ' ✓' : ''}
+                  </button>
+                ))}
+                {selectedTargetIds.length > 0 && (
+                  <div className="text-dim">
+                    已选择目标: {selectedTargetIds.map(id => gs.players.find(p => p.userId === id)?.username).join('、')}
+                  </div>
+                )}
+                <div className="text-tiesuo-actions">
+                  <button className="text-btn primary"
+                    disabled={selectedTargetIds.length === 0}
+                    onClick={() => {
+                      send('PLAY_CARD', { gameId, cardId: selectedCardId, targetUserIds: selectedTargetIds.map(String) });
+                      setSelectedCardId(null);
+                      setSelectedTargetIds([]);
+                    }}>确定使用</button>
+                  <button className="text-btn" onClick={() => {
+                    send('PLAY_CARD', { gameId, cardId: selectedCardId });
+                    setSelectedCardId(null);
+                    setSelectedTargetIds([]);
+                  }}>重铸（弃牌摸一张）</button>
+                  <button className="text-btn" onClick={() => { setSelectedCardId(null); setSelectedTargetIds([]); }}>取消</button>
+                </div>
+              </div>
+            );
+          }
           return needsTarget ? (
             <div className="text-target-select">
               选择目标:
@@ -463,12 +506,6 @@ export default function GamePage() {
                   {p.username}
                 </button>
               ))}
-              {card?.type === 'TIE_SUO' && (
-                <button className="text-btn" onClick={() => {
-                  send('PLAY_CARD', { gameId, cardId: selectedCardId });
-                  setSelectedCardId(null);
-                }}>重铸（弃牌摸一张）</button>
-              )}
               <button className="text-btn" onClick={() => setSelectedCardId(null)}>取消</button>
             </div>
           ) : (
