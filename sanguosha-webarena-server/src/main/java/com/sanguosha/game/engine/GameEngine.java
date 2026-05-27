@@ -312,6 +312,13 @@ public class GameEngine {
                         }
                         // 队列无人有资格响应或无懈已结算，继续下一张判定牌
                         state.getTempCards().clear();
+
+                        // [GUARD] 无懈可击流程结束后，防御性清理残留的 WAIT_WUXIE_RESPONSE
+                        if (state.getPendingAction() != null && "WAIT_WUXIE_RESPONSE".equals(state.getPendingAction().getActionType())) {
+                            log.warn("[WUXIE GUARD] JUDGE phase: stale WAIT_WUXIE_RESPONSE after wuxie chain resolution, clearing");
+                            state.setPendingAction(null);
+                        }
+
                         if (state.getPendingAction() != null) {
                             return state.getPendingAction();
                         }
@@ -1184,12 +1191,20 @@ public class GameEngine {
                 fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, player, target, null, 1,
                         Map.of("effectType", "HUO_GONG")));
                 // 铁索连环传导（火属性伤害，以实际伤害值为基础）
+                // propagateChainDamage 不再检查濒死，由下方统一处理
+                boolean hgSourceWasChained = player != null && player.isChained();
                 propagateChainDamage(state, player, target, huoGongDamage, "FIRE");
-                if (state.getPendingAction() != null) return success("火攻传导中");
-                if (state.isFinished()) return success("火攻导致游戏结束");
-                ActionResult dying = checkDying(state, target);
-                if (dying != null) return dying;
+
+                // 统一濒死检查：原始目标优先，铁索传导目标次之
+                List<GamePlayer> hgDyingCandidates = new ArrayList<>();
+                hgDyingCandidates.add(target);
+                if (hgSourceWasChained && player != null && !player.getUserId().equals(target.getUserId())) {
+                    hgDyingCandidates.add(player);
+                }
+                ActionResult hgDying = checkDyingForAll(state, hgDyingCandidates);
+                if (hgDying != null) return hgDying;
                 state.checkGameOver();
+                if (state.isFinished()) return success("火攻导致游戏结束");
             } else {
                 state.addLog("火攻失败，" + discardCard.getSuit().getSymbol() + "≠已展示花色，卡牌未弃置");
                 state.setPendingAction(null);
@@ -1261,12 +1276,18 @@ public class GameEngine {
                     state.addLog("⚡闪电判定生效！" + player.getUsername() + "受到3点雷电伤害");
                     fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, null, player, null, 3,
                             Map.of("effectType", "SHAN_DIAN")));
-                    // 铁索连环传导（雷电伤害）
+                    // 铁索连环传导（雷电伤害），propagateChainDamage 不再检查濒死
+                    GamePlayer lightningOpponent = player.getOpponent(state.getPlayers());
+                    boolean lightningOpponentWasChained = lightningOpponent != null && lightningOpponent.isChained();
                     propagateChainDamage(state, null, player, 3, "THUNDER");
-                    if (state.getPendingAction() != null) return;
-                    if (state.isFinished()) return;
-                    ActionResult dying = checkDying(state, player);
-                    if (dying != null) return;
+                    // 统一濒死检查
+                    List<GamePlayer> lightningDying = new ArrayList<>();
+                    lightningDying.add(player);
+                    if (lightningOpponentWasChained && lightningOpponent != null) {
+                        lightningDying.add(lightningOpponent);
+                    }
+                    ActionResult ld = checkDyingForAll(state, lightningDying);
+                    if (ld != null) return;
                     state.checkGameOver();
                 } else {
                     state.addLog("闪电判定不生效，留在判定区");
@@ -2423,17 +2444,23 @@ public class GameEngine {
             int shaChainDamage = damage + (shaHasTengJiaFire ? 1 : 0);
 
             // 铁索连环传导（使用含藤甲的实际伤害值）
+            // 注意：propagateChainDamage 不再检查濒死，由下方统一处理
+            boolean attackerWasChained = attacker != null && attacker.isChained();
             if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && responder.isChained()) {
                 propagateChainDamage(state, attacker, responder, shaChainDamage, natureStr);
-                if (state.getPendingAction() != null) return success("连环传导中", state.getPendingAction());
-                if (state.isFinished()) return success("连环传导导致游戏结束");
             }
 
-            // 濒死检查
-            ActionResult dying = checkDying(state, responder);
+            // 统一濒死检查：原始目标优先，铁索传导目标（场上唯一其他存活玩家）次之
+            List<GamePlayer> dyingCandidates = new ArrayList<>();
+            dyingCandidates.add(responder);
+            if (attackerWasChained && attacker != null && !attacker.getUserId().equals(responder.getUserId())) {
+                dyingCandidates.add(attacker);
+            }
+            ActionResult dying = checkDyingForAll(state, dyingCandidates);
             if (dying != null) return dying;
 
             state.checkGameOver();
+            if (state.isFinished()) return success("连环传导导致游戏结束");
 
             // 游戏未结束时触发伤害事件（麒麟弓等装备效果）
             if (!state.isFinished()) {
@@ -2701,16 +2728,23 @@ public class GameEngine {
         int guanChainDamage = damage + (guanHasTengJiaFire ? 1 : 0);
 
         // 铁索连环传导（使用含藤甲的实际伤害值）
+        // propagateChainDamage 不再检查濒死，由下方统一处理
+        boolean guanAttackerWasChained = attacker != null && attacker.isChained();
         if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained()) {
             propagateChainDamage(state, attacker, target, guanChainDamage, natureStr);
-            if (state.getPendingAction() != null) return success("连环传导中", state.getPendingAction());
-            if (state.isFinished()) return success("连环传导导致游戏结束");
         }
 
-        ActionResult dying = checkDying(state, target);
-        if (dying != null) return dying;
+        // 统一濒死检查：原始目标优先，铁索传导目标次之
+        List<GamePlayer> guanDyingCandidates = new ArrayList<>();
+        guanDyingCandidates.add(target);
+        if (guanAttackerWasChained && attacker != null && !attacker.getUserId().equals(target.getUserId())) {
+            guanDyingCandidates.add(attacker);
+        }
+        ActionResult guanDying = checkDyingForAll(state, guanDyingCandidates);
+        if (guanDying != null) return guanDying;
 
         state.checkGameOver();
+        if (state.isFinished()) return success("连环传导导致游戏结束");
         if (!state.isFinished()) {
             fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, target, null, damage,
                     Map.of("effectType", effectTypeStr != null ? effectTypeStr : "SHA")));
@@ -2841,15 +2875,22 @@ public class GameEngine {
             int hanbingChainDamage = damage + (hanbingHasTengJiaFire ? 1 : 0);
 
             // 铁索连环传导（使用含藤甲的实际伤害值）
+            // propagateChainDamage 不再检查濒死，由下方统一处理
+            boolean hanbingAttackerWasChained = attacker != null && attacker.isChained();
             if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained()) {
                 propagateChainDamage(state, attacker, target, hanbingChainDamage, natureStr);
-                if (state.getPendingAction() != null) return success("连环传导中", state.getPendingAction());
-                if (state.isFinished()) return success("连环传导导致游戏结束");
             }
 
-            ActionResult dying = checkDying(state, target);
-            if (dying != null) return dying;
+            // 统一濒死检查：原始目标优先，铁索传导目标次之
+            List<GamePlayer> hbDyingCandidates = new ArrayList<>();
+            hbDyingCandidates.add(target);
+            if (hanbingAttackerWasChained && attacker != null && !attacker.getUserId().equals(target.getUserId())) {
+                hbDyingCandidates.add(attacker);
+            }
+            ActionResult hbDying = checkDyingForAll(state, hbDyingCandidates);
+            if (hbDying != null) return hbDying;
             state.checkGameOver();
+            if (state.isFinished()) return success("连环传导导致游戏结束");
 
             if (!state.isFinished()) {
                 fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, target, null, damage,
@@ -3469,6 +3510,13 @@ public class GameEngine {
         dyingPlayer.setAlive(false);
         state.setPendingAction(null);
         state.addLog(dyingPlayer.getUsername() + " 死亡");
+        // 铁索传导后可能有多个玩家濒死，先检查其他濒死玩家再判断游戏结束
+        for (GamePlayer p : state.getPlayers()) {
+            if (p.getUserId() != dyingUserId && p.getCurrentHp() <= 0) {
+                state.addLog("检测到 " + p.getUsername() + " 也需要濒死处理");
+                return checkDying(state, p);
+            }
+        }
         state.checkGameOver();
         return success("玩家死亡");
     }
@@ -3513,6 +3561,13 @@ public class GameEngine {
                 // 脱离濒死
                 state.setPendingAction(null);
                 state.addLog(dyingPlayer.getUsername() + " 脱离濒死");
+                // 铁索传导后可能有多个玩家濒死，检查其他玩家是否需要濒死处理
+                for (GamePlayer p : state.getPlayers()) {
+                    if (p.getUserId() != dyingUserId && p.getCurrentHp() <= 0) {
+                        state.addLog("检测到 " + p.getUsername() + " 也需要濒死处理");
+                        return checkDying(state, p);
+                    }
+                }
                 return success("救援成功");
             }
 
@@ -3685,41 +3740,60 @@ public class GameEngine {
     }
 
     /**
+     * 在伤害结算（含铁索传导）后统一检查所有受影响玩家的濒死状态。
+     * 按顺序检查：原始受伤者 -> 横扫传导目标 -> 其他受伤者。
+     * 返回第一个濒死玩家的 pendingAction，其余玩家在濒死结算恢复后由 handleDying 继续检查。
+     */
+    private ActionResult checkDyingForAll(GameState state, List<GamePlayer> affectedPlayers) {
+        for (GamePlayer p : affectedPlayers) {
+            if (p != null && p.getCurrentHp() <= 0) {
+                ActionResult r = checkDying(state, p);
+                if (r != null) return r;
+            }
+        }
+        return null;
+    }
+
+    /**
      * 铁索连环属性伤害传导。
      * 对横置目标造成火/雷伤害后调用，将同点数伤害传导给其他横置角色。
-     * 可能设置 state 的 pendingAction（濒死求桃）或 state.finished。
+     * 注意：此方法不再检查濒死（checkDying），由各调用者统一处理。
+     * 注意：此方法不再触发 fireEvent，由各调用者统一处理。
+     * 设 state.chainDamageInProgress = true 以防重入。
      */
     private void propagateChainDamage(GameState state, GamePlayer source, GamePlayer target,
                                        int damage, String nature) {
         if (!"FIRE".equals(nature) && !"THUNDER".equals(nature)) return;
         if (!target.isChained()) return;
+        if (state.isChainDamageInProgress()) {
+            log.warn("[CHAIN GUARD] chainDamageInProgress=true, skipping re-entry for target={} source={}", target.getUserId(), source != null ? source.getUserId() : null);
+            return;
+        }
 
-        target.setChained(false);
-        state.addLog(target.getUsername() + " 解除横置状态，触发连环");
+        state.setChainDamageInProgress(true);
+        try {
+            target.setChained(false);
+            state.addLog(target.getUsername() + " 解除横置状态，触发连环");
 
-        for (GamePlayer p : state.getAlivePlayers()) {
-            if (p.getUserId().equals(target.getUserId())) continue;
-            if (!p.isChained()) continue;
+            for (GamePlayer p : state.getAlivePlayers()) {
+                if (p.getUserId().equals(target.getUserId())) continue;
+                if (!p.isChained()) continue;
 
-            p.setChained(false);
+                p.setChained(false);
 
-            // 计算实际传导伤害（每名目标独立判定藤甲火焰+1）
-            int actualDamage = damage;
-            if ("FIRE".equals(nature) && p.getArmor() != null && p.getArmor().getCardType() == CardType.TENG_JIA) {
-                actualDamage++;
-                state.addLog("藤甲效果触发，火焰伤害+1");
+                // 计算实际传导伤害（每名目标独立判定藤甲火焰+1）
+                int actualDamage = damage;
+                if ("FIRE".equals(nature) && p.getArmor() != null && p.getArmor().getCardType() == CardType.TENG_JIA) {
+                    actualDamage++;
+                    state.addLog("藤甲效果触发，火焰伤害+1");
+                }
+
+                p.takeDamage(actualDamage);
+                state.addLog(p.getUsername() + " 受到" + actualDamage + "点连环传导伤害");
+                // 注意：checkDying 由调用者在所有传导完成后统一检查
             }
-
-            p.takeDamage(actualDamage);
-            state.addLog(p.getUsername() + " 受到" + actualDamage + "点连环传导伤害");
-
-            fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, source, p, null, actualDamage,
-                    Map.of("effectType", "CHAIN", "nature", nature)));
-
-            ActionResult chainDying = checkDying(state, p);
-            if (chainDying != null) return; // pendingAction 已由 checkDying 设置
-            state.checkGameOver();
-            if (state.isFinished()) return;
+        } finally {
+            state.setChainDamageInProgress(false);
         }
     }
 

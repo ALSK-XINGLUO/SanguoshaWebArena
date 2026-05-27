@@ -38,6 +38,9 @@ public class GameState {
     // 已解决的伤害键（shaResolveId:targetUserId → 防止杀重复伤害）
     private final Set<String> resolvedDamageKeys = new HashSet<>();
 
+    // 铁索连环传导中标记，防止重复进入链式传导
+    private boolean chainDamageInProgress = false;
+
     // 日志
     private List<String> gameLog;
 
