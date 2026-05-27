@@ -35,6 +35,9 @@ public class GameState {
     // 临时存储的卡牌（五谷丰登等中间步骤使用）
     private List<GameCard> tempCards;
 
+    // 已解决的伤害键（shaResolveId:targetUserId → 防止杀重复伤害）
+    private final Set<String> resolvedDamageKeys = new HashSet<>();
+
     // 日志
     private List<String> gameLog;
 

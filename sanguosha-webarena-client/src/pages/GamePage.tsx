@@ -385,8 +385,30 @@ export default function GamePage() {
             </>
           )}
 
+          {/* DYING_REQUIRE_TAO: 濒死救援 */}
+          {pendingAction.actionType === 'DYING_REQUIRE_TAO' && (
+            <>
+              <div className="text-pending-hint">
+                {pendingAction.optionalCards && pendingAction.optionalCards.length > 0
+                  ? '选择一张救援卡牌，或点击跳过放弃救援'
+                  : '没有可用救援卡牌'}
+              </div>
+              <div className="text-pending-actions">
+                {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
+                  <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
+                    disabled={!selectedCardId}>
+                    使用
+                  </button>
+                )}
+                <button className="text-btn" onClick={handleSkipPending}>
+                  跳过（放弃救援）
+                </button>
+              </div>
+            </>
+          )}
+
           {/* 通用按钮 */}
-          {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && (
+          {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && pendingAction.actionType !== 'DYING_REQUIRE_TAO' && (
             <div className="text-pending-actions">
               {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
                 <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
@@ -441,11 +463,16 @@ export default function GamePage() {
       )}
       {pendingAction && !isMyPendingAction && pendingAction.actionType === 'WAIT_WUXIE_RESPONSE' && (
         <div className="text-pending">
-          <div className="text-pending-msg">等待对手使用无懈可击...</div>
+          <div className="text-pending-msg">等待 {gs?.players.find(p => p.userId === pendingAction.optionalTargetIds?.[0])?.username ?? '对手'} 使用无懈可击...</div>
+        </div>
+      )}
+      {pendingAction && !isMyPendingAction && pendingAction.actionType === 'DYING_REQUIRE_TAO' && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待 {gs?.players.find(p => p.userId === pendingAction.optionalTargetIds?.[0])?.username ?? '对手'} 救援濒死玩家...</div>
         </div>
       )}
       {/* 通用等待提示 */}
-      {pendingAction && !isMyPendingAction && !['CHOOSE_WUGU_CARD', 'WAIT_EQUIP_TRIGGER', 'WAIT_WUXIE_RESPONSE'].includes(pendingAction.actionType) && (
+      {pendingAction && !isMyPendingAction && !['CHOOSE_WUGU_CARD', 'WAIT_EQUIP_TRIGGER', 'WAIT_WUXIE_RESPONSE', 'DYING_REQUIRE_TAO'].includes(pendingAction.actionType) && (
         <div className="text-pending">
           <div className="text-pending-msg">等待对手操作...</div>
         </div>
