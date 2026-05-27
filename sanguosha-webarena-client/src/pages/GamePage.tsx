@@ -99,6 +99,7 @@ export default function GamePage() {
   const [gs, setGs] = useState<GameStateDTO | null>(null);
   const [gameId, setGameId] = useState<string>('');
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [selectedDiscardCardIds, setSelectedDiscardCardIds] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [gameOver, setGameOver] = useState(false);
   const [wuguSubmitting, setWuguSubmitting] = useState(false);
@@ -134,6 +135,7 @@ export default function GamePage() {
         setResponseSubmitting(false);
         setTestChangeHandSubmitting(false);
         setSelectedCardId(null);
+        setSelectedDiscardCardIds([]);
         setSkillMode(null);
         setSelectedSkillCardIds([]);
         setSelectedTargetIds([]);
@@ -254,6 +256,19 @@ export default function GamePage() {
     if (!pendingAction || !isMyPendingAction) return;
     if (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting) return;
     if (responseSubmitting && pendingAction.actionType !== 'CHOOSE_WUGU_CARD') return;
+
+    // HUO_GONG_DISCARD: 前端强校验花色匹配
+    if (pendingAction.actionType === 'HUO_GONG_DISCARD' && cardId) {
+      const revealedSuit = pendingAction.extraData?.revealedSuit;
+      if (revealedSuit) {
+        const selectedCard = pendingAction.optionalCards?.find(c => c.id === cardId);
+        if (selectedCard && selectedCard.suitName !== revealedSuit) {
+          showToast('花色不匹配，请选择同花色牌', 'error');
+          return;
+        }
+      }
+    }
+
     send('PENDING_RESPONSE', { gameId, cardId, actionId: pendingAction.actionId });
     setSelectedCardId(null);
     if (pendingAction.actionType === 'CHOOSE_WUGU_CARD') {
@@ -352,14 +367,28 @@ export default function GamePage() {
         <div className="text-pending">
           <div className="text-pending-msg">⚠️ {pendingAction.message}</div>
           {pendingAction.actionType === 'DISCARD' && (
-            <div className="text-pending-hint">需弃 {pendingAction.discardCount} 张</div>
+            <div className="text-pending-hint">
+              请选择 {pendingAction.discardCount} 张牌弃置（已选 {selectedDiscardCardIds.length}/{pendingAction.discardCount} 张）
+              {selectedDiscardCardIds.length === pendingAction.discardCount && (
+                <button className="text-btn primary"
+                  onClick={() => {
+                    send('PENDING_RESPONSE', { gameId, cardIds: selectedDiscardCardIds, actionId: pendingAction.actionId });
+                    setSelectedDiscardCardIds([]);
+                    setResponseSubmitting(true);
+                  }}
+                  disabled={responseSubmitting}
+                  style={{ marginLeft: 8 }}>
+                  {responseSubmitting ? '处理中...' : '弃置所选牌'}
+                </button>
+              )}
+            </div>
           )}
           {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && (
             <div className="text-pending-hint">
               [调试] actionType={pendingAction.actionType} targetUserId={pendingAction.optionalTargetIds?.[0]} currentUserId={currentUser?.userId} cards={pendingAction.optionalCards?.length}
             </div>
           )}
-          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
+          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'HUO_GONG_DISCARD' && (
             <div className="text-pending-cards">
               {pendingAction.optionalCards.map((card) => {
                 const isDisabled = pendingAction.actionType === 'CHOOSE_WUGU_CARD' ? wuguSubmitting : responseSubmitting;
@@ -408,6 +437,91 @@ export default function GamePage() {
             </>
           )}
 
+          {/* HUO_GONG_DISCARD: 火攻弃同花色牌 */}
+          {pendingAction.actionType === 'HUO_GONG_DISCARD' && (
+            <>
+              <div className="text-pending-hint">
+                {pendingAction.extraData?.revealedSuit
+                  ? `请弃置一张 ${getSuitSymbol(pendingAction.extraData.revealedSuit)} 花色手牌，或跳过（放弃火攻）`
+                  : pendingAction.message}
+              </div>
+              <div className="text-pending-cards">
+                {pendingAction.optionalCards?.map((card) => {
+                  const suitMatches = card.suitName === pendingAction.extraData?.revealedSuit;
+                  return (
+                    <button
+                      key={card.id}
+                      disabled={!suitMatches || responseSubmitting}
+                      className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''}`}
+                      onClick={() => setSelectedCardId(selectedCardId === card.id ? null : card.id)}
+                      style={!suitMatches ? {opacity: 0.3, cursor: 'not-allowed'} : undefined}
+                    >
+                      {formatCard(card)}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-pending-actions">
+                <button className="text-btn primary"
+                  onClick={() => handleConfirmPending(selectedCardId)}
+                  disabled={!selectedCardId || responseSubmitting}>
+                  {responseSubmitting ? '处理中...' : '确认'}
+                </button>
+                <button className="text-btn" onClick={handleSkipPending} disabled={responseSubmitting}>
+                  放弃火攻
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* HAN_BING_CHOOSE: 寒冰剑弃牌选择 */}
+          {pendingAction.actionType === 'HAN_BING_CHOOSE' && (
+            <>
+              <div className="text-pending-hint">
+                {pendingAction.message}
+                {pendingAction.discardCount > 0 && (
+                  <span>（已选 {selectedDiscardCardIds.length}/{pendingAction.discardCount} 张）</span>
+                )}
+              </div>
+              <div className="text-pending-cards">
+                {pendingAction.optionalCards?.map((card) => (
+                  <button
+                    key={card.id}
+                    className={`text-card-btn ${card.id === '__RANDOM_HAND__' ? '' : isCardRed(card) ? 'red' : 'black'} ${selectedDiscardCardIds.includes(card.id) ? 'discard-sel' : ''}`}
+                    onClick={() => {
+                      if (responseSubmitting) return;
+                      setSelectedDiscardCardIds(prev =>
+                        prev.includes(card.id)
+                          ? prev.filter(id => id !== card.id)
+                          : (prev.length < pendingAction.discardCount ? [...prev, card.id] : prev)
+                      );
+                    }}
+                  >
+                    {card.id === '__RANDOM_HAND__' ? `[随机] ${card.displayName}` : formatCard(card)}
+                  </button>
+                ))}
+              </div>
+              <div className="text-pending-actions">
+                <button className="text-btn primary"
+                  onClick={() => {
+                    send('PENDING_RESPONSE', { gameId, cardIds: selectedDiscardCardIds, actionId: pendingAction.actionId });
+                    setSelectedDiscardCardIds([]);
+                    setResponseSubmitting(true);
+                  }}
+                  disabled={selectedDiscardCardIds.length === 0 || responseSubmitting}>
+                  {responseSubmitting ? '处理中...' : '确认弃牌'}
+                </button>
+                <button className="text-btn" onClick={() => {
+                  send('PENDING_RESPONSE', { gameId, cardIds: [], actionId: pendingAction.actionId });
+                  setSelectedDiscardCardIds([]);
+                  setResponseSubmitting(true);
+                }} disabled={responseSubmitting}>
+                  放弃寒冰剑
+                </button>
+              </div>
+            </>
+          )}
+
           {/* DYING_REQUIRE_TAO: 濒死救援 */}
           {pendingAction.actionType === 'DYING_REQUIRE_TAO' && (
             <>
@@ -431,7 +545,7 @@ export default function GamePage() {
           )}
 
           {/* 通用按钮 */}
-          {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && pendingAction.actionType !== 'DYING_REQUIRE_TAO' && (
+          {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && pendingAction.actionType !== 'DYING_REQUIRE_TAO' && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'HUO_GONG_DISCARD' && pendingAction.actionType !== 'HAN_BING_CHOOSE' && (
             <div className="text-pending-actions">
               {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
                 <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
@@ -439,7 +553,7 @@ export default function GamePage() {
                   {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting ? '选择中...' : responseSubmitting ? '处理中...' : '确认'}
                 </button>
               )}
-              {pendingAction.actionType !== 'CHOOSE_WUGU_CARD' && (
+              {pendingAction.actionType !== 'CHOOSE_WUGU_CARD' && pendingAction.actionType !== 'DISCARD' && (
                 <button className="text-btn" onClick={handleSkipPending}
                   disabled={responseSubmitting}>
                   {responseSubmitting ? '处理中...' : '跳过'}
@@ -496,8 +610,13 @@ export default function GamePage() {
           <div className="text-pending-msg">等待 {gs?.players.find(p => p.userId === pendingAction.optionalTargetIds?.[0])?.username ?? '对手'} 救援濒死玩家...</div>
         </div>
       )}
+      {pendingAction && !isMyPendingAction && pendingAction.actionType === 'HAN_BING_CHOOSE' && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待对手选择寒冰剑弃牌...</div>
+        </div>
+      )}
       {/* 通用等待提示 */}
-      {pendingAction && !isMyPendingAction && !['CHOOSE_WUGU_CARD', 'WAIT_EQUIP_TRIGGER', 'WAIT_WUXIE_RESPONSE', 'DYING_REQUIRE_TAO'].includes(pendingAction.actionType) && (
+      {pendingAction && !isMyPendingAction && !['CHOOSE_WUGU_CARD', 'WAIT_EQUIP_TRIGGER', 'WAIT_WUXIE_RESPONSE', 'DYING_REQUIRE_TAO', 'HAN_BING_CHOOSE'].includes(pendingAction.actionType) && (
         <div className="text-pending">
           <div className="text-pending-msg">等待对手操作...</div>
         </div>
@@ -619,13 +738,20 @@ export default function GamePage() {
                 return (
                   <button
                     key={card.id}
-                    className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''} ${isSkillSelected ? 'skill-sel' : ''}`}
+                    className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''} ${isSkillSelected ? 'skill-sel' : ''} ${selectedDiscardCardIds.includes(card.id) ? 'discard-sel' : ''}`}
                     onClick={() => {
                       if (skillMode === 'ZHANG_BA_SHE_MAO') {
                         if (isSkillSelected) {
                           setSelectedSkillCardIds(prev => prev.filter(id => id !== card.id));
                         } else if (selectedSkillCardIds.length < 2) {
                           setSelectedSkillCardIds(prev => [...prev, card.id]);
+                        }
+                      } else if (pendingAction?.actionType === 'DISCARD' && isMyPendingAction) {
+                        const isDiscardSelected = selectedDiscardCardIds.includes(card.id);
+                        if (isDiscardSelected) {
+                          setSelectedDiscardCardIds(prev => prev.filter(id => id !== card.id));
+                        } else if (selectedDiscardCardIds.length < (pendingAction.discardCount ?? 1)) {
+                          setSelectedDiscardCardIds(prev => [...prev, card.id]);
                         }
                       } else if (isWuxieResponse && card.type === 'WU_XIE') {
                         setSelectedCardId(prev => (prev === card.id ? null : card.id));
@@ -635,12 +761,13 @@ export default function GamePage() {
                     }}
                     disabled={
                       skillMode ? false :
+                      pendingAction?.actionType === 'DISCARD' ? false :
                       isWuxieResponse ? (card.type !== 'WU_XIE') :
                       (!isPlayPhase || !isMyTurn || !!pendingAction)
                     }
                     title={card.displayName}
                   >
-                    [{isSkillSelected ? '✓ ' : ''}{formatCard(card)}]
+                    [{isSkillSelected ? '✓ ' : ''}{selectedDiscardCardIds.includes(card.id) ? '✓ ' : ''}{formatCard(card)}]
                   </button>
                 );
               })}

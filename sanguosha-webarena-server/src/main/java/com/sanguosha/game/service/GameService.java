@@ -88,8 +88,9 @@ public class GameService {
             // 循环处理不需要玩家交互的阶段
             while (state.getPendingAction() == null && !state.isFinished()) {
                 // PLAY 阶段需要等待用户出牌或结束出牌，不能自动推进
-                // 不在此广播——调用者已在进入 processGamePhase 前广播了当前状态
                 if ("PLAY".equals(state.getPhase())) {
+                    // processPhase 可能已递归推进到新玩家的出牌阶段，广播最新状态
+                    broadcastGameState(room, state);
                     return;
                 }
 
@@ -226,6 +227,8 @@ public class GameService {
         Map<String, Object> params = (Map<String, Object>) data;
         String gameId = (String) params.get("gameId");
         String cardId = (String) params.get("cardId");
+        @SuppressWarnings("unchecked")
+        List<String> cardIds = (List<String>) params.get("cardIds");
         String targetUserId = (String) params.get("targetUserId");
         String actionId = (String) params.get("actionId");
 
@@ -245,14 +248,14 @@ public class GameService {
         String pendingActionId = state.getPendingAction() != null ? state.getPendingAction().getActionId() : "null";
         String pendingTargetUserId = state.getPendingAction() != null && state.getPendingAction().getOptionalTargetIds() != null
                 ? state.getPendingAction().getOptionalTargetIds().toString() : "null";
-        log.info("[HANDLE_RESPONSE ENTRY] userId={} username={} cardId={} actionId={} pendingType={} pendingActionId={} targetUserId={}",
-                userId, username, cardId, actionId, pendingActionType, pendingActionId, pendingTargetUserId);
+        log.info("[HANDLE_RESPONSE ENTRY] userId={} username={} cardId={} cardIds={} actionId={} pendingType={} pendingActionId={} targetUserId={}",
+                userId, username, cardId, cardIds, actionId, pendingActionType, pendingActionId, pendingTargetUserId);
 
         // 对 state 加锁：保证同个 pendingAction 不被并发处理
         // 防止双击/重复消息导致同个动作进入两次流程
         GameEngine.ActionResult result;
         synchronized (state) {
-            result = gameEngine.handleResponse(state, userId, cardId, targetUserId, actionId);
+            result = gameEngine.handleResponse(state, userId, cardId, cardIds, targetUserId, actionId);
             if (result.success()) {
                 state.setPendingAction(result.pendingAction());
             }

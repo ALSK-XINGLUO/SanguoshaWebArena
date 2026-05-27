@@ -164,6 +164,13 @@
   font-weight: bold;
 }
 
+.text-card-btn.discard-sel {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.25);
+  color: #d29922;
+  font-weight: bold;
+}
+
 /* ===== Skill button ===== */
 .text-btn.skill {
   background: #8957e5;
