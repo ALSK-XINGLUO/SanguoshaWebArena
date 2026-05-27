@@ -54,7 +54,6 @@ public class GameEngine {
         trickEffects.put(CardType.WAN_JIAN, this::useWanJian);
         trickEffects.put(CardType.TAO_YUAN, this::useTaoYuan);
         trickEffects.put(CardType.WU_GU, this::useWuGu);
-        trickEffects.put(CardType.JIE_DAO, this::useJieDao);
         trickEffects.put(CardType.HUO_GONG, this::useHuoGong);
 
         // 装备技能注册
@@ -496,6 +495,10 @@ public class GameEngine {
 
         // 锦囊牌：先校验合法性，再进入无懈窗口
         if (type.isTrick()) {
+            // 借刀杀人：双目标特殊处理（借刀目标 + 杀目标）
+            if (type == CardType.JIE_DAO) {
+                return playJieDaoWithWuxie(state, player, card, targetUserId, targetUserIds);
+            }
             String trickErr = validateTrickUse(state, player, type, targetUserId, targetUserIds);
             if (trickErr != null) return failure(trickErr);
             return playTrickWithWuxieCheck(state, player, card, type, effect, targetUserId, targetCardId);
@@ -586,6 +589,26 @@ public class GameEngine {
                                                  GamePlayer target, String targetUserId,
                                                  GameCard.Nature nature,
                                                  boolean hasJiuEffect, boolean hasQingGang, boolean hasZhugeNu) {
+        // 先记录杀已使用（无论是否被防具抵挡）
+        String shaDisplayName = switch (nature) {
+            case FIRE -> "火杀";
+            case THUNDER -> "雷杀";
+            default -> "杀";
+        };
+        state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了" + shaDisplayName);
+        if (!hasZhugeNu) {
+            player.setUsedShaThisTurn(true);
+        }
+        player.setShaCountThisTurn(player.getShaCountThisTurn() + 1);
+
+        // 仁王盾在出闪之前判断：黑色普通杀直接被仁王盾抵挡
+        if (nature == GameCard.Nature.NORMAL && shaIsBlack
+                && target.getArmor() != null && target.getArmor().getCardType() == CardType.REN_WANG
+                && !hasQingGang) {
+            state.addLog(target.getUsername() + " 的仁王盾使黑色杀无效");
+            return success("杀被仁王盾抵挡");
+        }
+
         GameAction action = new GameAction();
         action.setActionType("RESPOND_SHAN");
         action.setSourceCardId(shaCardId);
@@ -609,17 +632,6 @@ public class GameEngine {
         action.setExtraData(shaExtra);
 
         state.setPendingAction(action);
-
-        String shaDisplayName = switch (nature) {
-            case FIRE -> "火杀";
-            case THUNDER -> "雷杀";
-            default -> "杀";
-        };
-        state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了" + shaDisplayName);
-        if (!hasZhugeNu) {
-            player.setUsedShaThisTurn(true);
-        }
-        player.setShaCountThisTurn(player.getShaCountThisTurn() + 1);
 
         return success("杀已使用,等待对手响应", action);
     }
@@ -672,8 +684,8 @@ public class GameEngine {
     }
 
     /**
-     * 过河拆桥 — 简化实现：不能对自己使用，不暴露对手手牌。
-     * 如果目标有装备，使用者可以选择弃置公开装备；否则随机弃置目标一张手牌。
+     * 过河拆桥 — 不能对自己使用，不暴露对手手牌。
+     * 目标区域支持：装备区（公开）、判定区（公开）、手牌区（随机一张）。
      */
     private ActionResult useGuoHe(GameState state, GamePlayer player, GameCard card,
                                   String targetUserId, String targetCardId) {
@@ -686,51 +698,60 @@ public class GameEngine {
         boolean hasHandCards = !target.getHandCards().isEmpty();
         boolean hasEquipment = target.getWeapon() != null || target.getArmor() != null
                 || target.getPlusHorse() != null || target.getMinusHorse() != null;
-        if (!hasHandCards && !hasEquipment) return failure("目标没有可拆的牌");
+        boolean hasJudgeCards = !target.getJudgeArea().isEmpty();
+        if (!hasHandCards && !hasEquipment && !hasJudgeCards) return failure("目标没有可拆的牌");
 
         player.removeHandCard(card.getId());
         state.discardCard(card);
 
-        if (hasEquipment) {
-            // 有装备：让使用者选择弃置哪件装备（公开信息）
-            List<String> equipIds = new ArrayList<>();
-            List<Map<String, Object>> equipInfos = new ArrayList<>();
+        // 始终展示所有可选牌（除非只有手牌）
+        boolean hasVisibleCards = hasEquipment || hasJudgeCards;
+        if (hasVisibleCards) {
+            List<String> choiceIds = new ArrayList<>();
+            List<Map<String, Object>> choiceCards = new ArrayList<>();
             if (target.getWeapon() != null) {
-                equipIds.add(target.getWeapon().getId());
-                equipInfos.add(cardToClientMap(target.getWeapon()));
+                choiceIds.add(target.getWeapon().getId());
+                choiceCards.add(cardToClientMap(target.getWeapon()));
             }
             if (target.getArmor() != null) {
-                equipIds.add(target.getArmor().getId());
-                equipInfos.add(cardToClientMap(target.getArmor()));
+                choiceIds.add(target.getArmor().getId());
+                choiceCards.add(cardToClientMap(target.getArmor()));
             }
             if (target.getPlusHorse() != null) {
-                equipIds.add(target.getPlusHorse().getId());
-                equipInfos.add(cardToClientMap(target.getPlusHorse()));
+                choiceIds.add(target.getPlusHorse().getId());
+                choiceCards.add(cardToClientMap(target.getPlusHorse()));
             }
             if (target.getMinusHorse() != null) {
-                equipIds.add(target.getMinusHorse().getId());
-                equipInfos.add(cardToClientMap(target.getMinusHorse()));
+                choiceIds.add(target.getMinusHorse().getId());
+                choiceCards.add(cardToClientMap(target.getMinusHorse()));
             }
-            // 添加一个随机弃手牌的选项（ID用特殊标记）
-            equipIds.add("__RANDOM_HAND__");
-            equipInfos.add(Map.of("id", "__RANDOM_HAND__", "displayName", "随机一张手牌",
-                    "category", "特殊", "type", "RANDOM"));
+            // 添加判定区牌
+            for (GameCard jc : target.getJudgeArea()) {
+                choiceIds.add(jc.getId());
+                choiceCards.add(cardToClientMap(jc));
+            }
+            // 添加一个随机弃手牌的选项
+            if (hasHandCards) {
+                choiceIds.add("__RANDOM_HAND__");
+                choiceCards.add(Map.of("id", "__RANDOM_HAND__", "displayName", "随机一张手牌",
+                        "category", "特殊", "type", "RANDOM"));
+            }
 
             GameAction action = new GameAction();
             action.setActionType("CHOOSE_TARGET_CARD");
             action.setSourceCardId(card.getId());
             action.setSourcePlayerId(player.getUserId());
-            action.setOptionalCardIds(equipIds);
-            action.setOptionalCards(equipInfos);
+            action.setOptionalCardIds(choiceIds);
+            action.setOptionalCards(choiceCards);
             action.setOptionalTargetIds(Collections.singletonList(player.getUserId()));
-            action.setMessage("请选择要弃置的装备，或选择随机手牌（过河拆桥）");
+            action.setMessage("请选择要弃置的牌（过河拆桥）");
             action.setExtraData(Map.of("effectType", "GUO_HE", "targetId", target.getUserId()));
             state.setPendingAction(action);
             state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了过河拆桥");
             return success("过河拆桥已使用，请选择要弃置的牌", action);
         }
 
-        // 无装备：随机弃一张手牌
+        // 无可见牌（装备/判定区）：随机弃一张手牌
         if (hasHandCards) {
             int idx = new Random().nextInt(target.getHandCards().size());
             GameCard discardCard = target.getHandCards().get(idx);
@@ -742,8 +763,8 @@ public class GameEngine {
     }
 
     /**
-     * 顺手牵羊 — 简化实现：不能对自己使用，不暴露对手手牌。
-     * 如果目标有装备，使用者可以选择获得公开装备；否则随机获得目标一张手牌。
+     * 顺手牵羊 — 不能对自己使用，不暴露对手手牌。
+     * 目标区域支持：装备区（公开）、判定区（公开）、手牌区（随机一张）。
      */
     private ActionResult useShunShou(GameState state, GamePlayer player, GameCard card,
                                      String targetUserId, String targetCardId) {
@@ -759,51 +780,60 @@ public class GameEngine {
         boolean hasHandCards = !target.getHandCards().isEmpty();
         boolean hasEquipment = target.getWeapon() != null || target.getArmor() != null
                 || target.getPlusHorse() != null || target.getMinusHorse() != null;
-        if (!hasHandCards && !hasEquipment) return failure("目标没有可顺的牌");
+        boolean hasJudgeCards = !target.getJudgeArea().isEmpty();
+        if (!hasHandCards && !hasEquipment && !hasJudgeCards) return failure("目标没有可顺的牌");
 
         player.removeHandCard(card.getId());
         state.discardCard(card);
 
-        if (hasEquipment) {
-            // 有装备：让使用者选择获得哪件装备（公开信息）
-            List<String> equipIds = new ArrayList<>();
-            List<Map<String, Object>> equipInfos = new ArrayList<>();
+        // 始终展示所有可选牌（除非只有手牌）
+        boolean hasVisibleCards = hasEquipment || hasJudgeCards;
+        if (hasVisibleCards) {
+            List<String> choiceIds = new ArrayList<>();
+            List<Map<String, Object>> choiceCards = new ArrayList<>();
             if (target.getWeapon() != null) {
-                equipIds.add(target.getWeapon().getId());
-                equipInfos.add(cardToClientMap(target.getWeapon()));
+                choiceIds.add(target.getWeapon().getId());
+                choiceCards.add(cardToClientMap(target.getWeapon()));
             }
             if (target.getArmor() != null) {
-                equipIds.add(target.getArmor().getId());
-                equipInfos.add(cardToClientMap(target.getArmor()));
+                choiceIds.add(target.getArmor().getId());
+                choiceCards.add(cardToClientMap(target.getArmor()));
             }
             if (target.getPlusHorse() != null) {
-                equipIds.add(target.getPlusHorse().getId());
-                equipInfos.add(cardToClientMap(target.getPlusHorse()));
+                choiceIds.add(target.getPlusHorse().getId());
+                choiceCards.add(cardToClientMap(target.getPlusHorse()));
             }
             if (target.getMinusHorse() != null) {
-                equipIds.add(target.getMinusHorse().getId());
-                equipInfos.add(cardToClientMap(target.getMinusHorse()));
+                choiceIds.add(target.getMinusHorse().getId());
+                choiceCards.add(cardToClientMap(target.getMinusHorse()));
+            }
+            // 添加判定区牌
+            for (GameCard jc : target.getJudgeArea()) {
+                choiceIds.add(jc.getId());
+                choiceCards.add(cardToClientMap(jc));
             }
             // 添加一个随机获得手牌的选项
-            equipIds.add("__RANDOM_HAND__");
-            equipInfos.add(Map.of("id", "__RANDOM_HAND__", "displayName", "随机一张手牌",
-                    "category", "特殊", "type", "RANDOM"));
+            if (hasHandCards) {
+                choiceIds.add("__RANDOM_HAND__");
+                choiceCards.add(Map.of("id", "__RANDOM_HAND__", "displayName", "随机一张手牌",
+                        "category", "特殊", "type", "RANDOM"));
+            }
 
             GameAction action = new GameAction();
             action.setActionType("CHOOSE_TARGET_CARD");
             action.setSourceCardId(card.getId());
             action.setSourcePlayerId(player.getUserId());
-            action.setOptionalCardIds(equipIds);
-            action.setOptionalCards(equipInfos);
+            action.setOptionalCardIds(choiceIds);
+            action.setOptionalCards(choiceCards);
             action.setOptionalTargetIds(Collections.singletonList(player.getUserId()));
-            action.setMessage("请选择要获得的装备，或选择随机手牌（顺手牵羊）");
+            action.setMessage("请选择要获得的牌（顺手牵羊）");
             action.setExtraData(Map.of("effectType", "SHUN_SHOU", "targetId", target.getUserId()));
             state.setPendingAction(action);
             state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了顺手牵羊");
             return success("顺手牵羊已使用，请选择要获得的牌", action);
         }
 
-        // 无装备：随机获得一张手牌
+        // 无可见牌：随机获得一张手牌
         if (hasHandCards) {
             int idx = new Random().nextInt(target.getHandCards().size());
             GameCard stealCard = target.getHandCards().get(idx);
@@ -983,36 +1013,84 @@ public class GameEngine {
     }
 
     /**
-     * 借刀杀人
+     * 借刀杀人play入口（双目标：借刀目标 + 杀目标）
+     * 先校验合法性，再进入无懈可击窗口。
      */
-    private ActionResult useJieDao(GameState state, GamePlayer player, GameCard card,
-                                   String targetUserId, String targetCardId) {
-        GamePlayer target = state.getOpponent();
-        if (target == null || !target.isAlive() || target.getWeapon() == null) {
-            return failure("借刀杀人：目标没有武器");
+    private ActionResult playJieDaoWithWuxie(GameState state, GamePlayer player, GameCard card,
+                                              String targetUserId, List<String> targetUserIds) {
+        // 从 targetUserIds 解析双目标
+        String jieDaoTargetId;
+        String shaTargetId;
+        if (targetUserIds != null && targetUserIds.size() >= 2) {
+            jieDaoTargetId = targetUserIds.get(0);
+            shaTargetId = targetUserIds.get(1);
+        } else {
+            return failure("借刀杀人需要选择两个目标：借刀目标和杀的目标");
         }
 
+        GamePlayer jieDaoTarget = findPlayerById(state, Long.valueOf(jieDaoTargetId));
+        GamePlayer shaTarget = findPlayerById(state, Long.valueOf(shaTargetId));
+        if (jieDaoTarget == null || !jieDaoTarget.isAlive()) return failure("借刀目标无效");
+        if (shaTarget == null || !shaTarget.isAlive()) return failure("杀的目标无效");
+        if (jieDaoTarget.getUserId().equals(player.getUserId())) return failure("不能对自己使用借刀杀人");
+        if (shaTarget.getUserId().equals(jieDaoTarget.getUserId())) return failure("杀的目标不能是借刀目标自己");
+        if (jieDaoTarget.getWeapon() == null) return failure("借刀杀人：目标没有武器");
+        // 验证杀目标在借刀目标攻击范围内
+        if (!jieDaoTarget.canAttack(shaTarget, false)) {
+            return failure("杀的目标不在" + jieDaoTarget.getUsername() + "的攻击范围内");
+        }
+
+        // 校验通过，移除手牌并进入无懈可击窗口
         player.removeHandCard(card.getId());
         state.discardCard(card);
 
-        List<String> shaCards = target.getHandCards().stream()
-                .filter(c -> c.getCardType() == CardType.SHA)
-                .map(GameCard::getId)
-                .toList();
+        // 构建效果执行器：无懈通过后执行借刀效果
+        CardEffect jdEffect = (st, pl, cd, tgtId, tgtCardId) -> {
+            GamePlayer jdTarget = findPlayerById(st, Long.valueOf(jieDaoTargetId));
+            GamePlayer sTarget = findPlayerById(st, Long.valueOf(shaTargetId));
+            if (jdTarget == null) return failure("借刀目标已不存在");
+            if (sTarget == null) return failure("杀目标已不存在");
 
-        GameAction action = new GameAction();
-        action.setActionType("RESPOND_SHA");
-        action.setSourceCardId(card.getId());
-        action.setSourcePlayerId(player.getUserId());
-        action.setOptionalCardIds(shaCards);
-        action.setOptionalCards(cardIdsToClientMap(state, shaCards));
-        action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
-        action.setMessage("请出杀，否则失去武器（借刀杀人）");
-        action.setExtraData(Map.of("effectType", "JIE_DAO", "weaponId", target.getWeapon().getId()));
+            // 创建 RESPOND_SHA：要求借刀目标对杀目标出一张杀
+            List<String> shaCardsList = jdTarget.getHandCards().stream()
+                    .filter(c -> c.getCardType() == CardType.SHA)
+                    .map(GameCard::getId)
+                    .toList();
 
-        state.setPendingAction(action);
-        state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了借刀杀人");
-        return success("借刀杀人已使用", action);
+            if (shaCardsList.isEmpty()) {
+                // 没有杀可出：直接失去武器
+                GameCard weapon = removeEquipment(jdTarget, st, jdTarget.getWeapon().getCardType());
+                if (weapon != null) {
+                    pl.drawCards(Collections.singletonList(weapon));
+                    st.addLog(pl.getUsername() + " 获得了" + jdTarget.getUsername() + " 的 " + weapon.getCardType().getDisplayName());
+                }
+                st.setPendingAction(null);
+                return success("借刀杀人：借刀目标无杀，失去武器");
+            }
+
+            GameAction jdAction = new GameAction();
+            jdAction.setActionType("RESPOND_SHA");
+            jdAction.setSourceCardId(cd.getId());
+            jdAction.setSourcePlayerId(pl.getUserId());
+            jdAction.setOptionalCardIds(shaCardsList);
+            jdAction.setOptionalCards(cardIdsToClientMap(st, shaCardsList));
+            jdAction.setOptionalTargetIds(Collections.singletonList(jdTarget.getUserId()));
+            jdAction.setMessage("请出杀，否则失去武器（借刀杀人）");
+            jdAction.setExtraData(Map.of(
+                    "effectType", "JIE_DAO",
+                    "weaponId", jdTarget.getWeapon().getId(),
+                    "jieDaoTargetId", jieDaoTargetId,
+                    "shaTargetId", shaTargetId
+            ));
+
+            st.setPendingAction(jdAction);
+            st.addLog(pl.getUsername() + " 对 " + jdTarget.getUsername() + " 使用了借刀杀人，要求对 " + sTarget.getUsername() + " 出杀");
+            return success("借刀杀人已使用", jdAction);
+        };
+
+        // 进入无懈可击窗口（以借刀目标作为无懈的原始目标）
+        return playTrickWithWuxieCheck(state, player, card, CardType.JIE_DAO, jdEffect,
+                jieDaoTargetId, shaTargetId);
     }
 
     /**
@@ -1022,9 +1100,9 @@ public class GameEngine {
                                            String targetUserId, String targetCardId) {
         player.removeHandCard(card.getId());
 
-        // 如果有同类型装备，先卸下
+        // 如果有同类型装备，先卸下（触发失去装备效果，如白银狮子回血）
         CardType type = card.getCardType();
-        GameCard old = player.unequip(type);
+        GameCard old = removeEquipment(player, state, type);
         if (old != null) {
             state.discardCard(old);
             state.addLog(player.getUsername() + " 替换了" + old.getCardType().getDisplayName());
@@ -1174,26 +1252,18 @@ public class GameEngine {
                 state.discardCard(discardCard);
 
                 // 花色相同，成功
-                // 计算实际火焰伤害（含藤甲+1）
-                int huoGongDamage = 1;
-                boolean huoGongHasTengJia = target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA;
-                if (huoGongHasTengJia) {
-                    huoGongDamage++;
-                }
-                target.takeDamage(huoGongDamage);
-                state.addLog("火攻成功！" + target.getUsername() + "受到" + huoGongDamage + "点火伤害");
+                // 计算铁索传导基础伤害（含藤甲+1）
+                int hgChainBase = 1 + (target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA ? 1 : 0);
+                // 使用统一入口计算最终伤害（先藤甲+1，再白银狮子减至1）
+                int huoGongFinal = calculateFinalDamage(state, target, 1, "FIRE");
+                target.takeDamage(huoGongFinal);
+                state.addLog("火攻成功！" + target.getUsername() + "受到" + huoGongFinal + "点火伤害");
 
-                if (huoGongHasTengJia) {
-                    fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, player, target, null, 1,
-                            Map.of("effectType", "TENG_JIA_FIRE")));
-                }
-
-                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, player, target, null, 1,
+                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, player, target, null, huoGongFinal,
                         Map.of("effectType", "HUO_GONG")));
-                // 铁索连环传导（火属性伤害，以实际伤害值为基础）
-                // propagateChainDamage 不再检查濒死，由下方统一处理
+                // 铁索连环传导（火属性伤害）
                 boolean hgSourceWasChained = player != null && player.isChained();
-                propagateChainDamage(state, player, target, huoGongDamage, "FIRE");
+                propagateChainDamage(state, player, target, hgChainBase, "FIRE");
 
                 // 统一濒死检查：原始目标优先，铁索传导目标次之
                 List<GamePlayer> hgDyingCandidates = new ArrayList<>();
@@ -1272,11 +1342,12 @@ public class GameEngine {
                 if (judgeCard.getSuit() == GameCard.Suit.SPADE && judgeCard.getNumber() >= 2 && judgeCard.getNumber() <= 9) {
                     state.discardCard(trickCard);
                     state.discardCard(judgeCard);
-                    player.takeDamage(3);
-                    state.addLog("⚡闪电判定生效！" + player.getUsername() + "受到3点雷电伤害");
-                    fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, null, player, null, 3,
+                    int lightningFinal = calculateFinalDamage(state, player, 3, "THUNDER");
+                    player.takeDamage(lightningFinal);
+                    state.addLog("⚡闪电判定生效！" + player.getUsername() + "受到" + lightningFinal + "点雷电伤害");
+                    fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, null, player, null, lightningFinal,
                             Map.of("effectType", "SHAN_DIAN")));
-                    // 铁索连环传导（雷电伤害），propagateChainDamage 不再检查濒死
+                    // 铁索连环传导（雷电伤害，使用原始伤害3，传导目标独立判定防具）
                     GamePlayer lightningOpponent = player.getOpponent(state.getPlayers());
                     boolean lightningOpponentWasChained = lightningOpponent != null && lightningOpponent.isChained();
                     propagateChainDamage(state, null, player, 3, "THUNDER");
@@ -1347,7 +1418,8 @@ public class GameEngine {
                 if (target.getUserId().equals(player.getUserId())) return "不能对自己使用过河拆桥";
                 if (target.getHandCards().isEmpty() && target.getWeapon() == null
                         && target.getArmor() == null && target.getPlusHorse() == null
-                        && target.getMinusHorse() == null) return "目标没有可拆的牌";
+                        && target.getMinusHorse() == null && target.getJudgeArea().isEmpty())
+                    return "目标没有可拆的牌";
                 return null;
             }
             case SHUN_SHOU -> {
@@ -1358,7 +1430,8 @@ public class GameEngine {
                 if (player.calculateDistanceTo(target) > 1) return "距离不足";
                 if (target.getHandCards().isEmpty() && target.getWeapon() == null
                         && target.getArmor() == null && target.getPlusHorse() == null
-                        && target.getMinusHorse() == null) return "目标没有可顺的牌";
+                        && target.getMinusHorse() == null && target.getJudgeArea().isEmpty())
+                    return "目标没有可顺的牌";
                 return null;
             }
             case HUO_GONG -> {
@@ -1369,10 +1442,7 @@ public class GameEngine {
                 return null;
             }
             case JIE_DAO -> {
-                GamePlayer target = findPlayerById(state, targetUserId != null ?
-                        Long.valueOf(targetUserId) : state.getOpponent().getUserId());
-                if (target == null || !target.isAlive()) return "目标无效";
-                if (target.getWeapon() == null) return "借刀杀人：目标没有武器";
+                // JIE_DAO 双目标校验现在在 playJieDaoWithWuxie 中独立完成
                 return null;
             }
             case JUE_DOU -> {
@@ -1764,16 +1834,17 @@ public class GameEngine {
                 return success("延时锦囊被无懈可击抵消");
             } else {
                 // 偶数 → 未被抵消，正常判定
+                // 清除旧 WAIT_WUXIE_RESPONSE，避免被误当作濒死 pending action 重新发出
+                state.setPendingAction(null);
                 if (judgeCard != null) {
                     applyDelayTrickEffect(state, current, judgeCard);
                 }
                 state.getTempCards().clear();
-                // applyDelayTrickEffect 可能设置了濒死求桃 pending action
+                // applyDelayTrickEffect 可能设置了濒死求桃 pending action（如闪电）
                 GameAction pendingAfterApply = state.getPendingAction();
                 if (pendingAfterApply != null) {
                     return success("延时锦囊判定完成，需处理濒死", pendingAfterApply);
                 }
-                state.setPendingAction(null);
                 return success("延时锦囊判定完成");
             }
         }
@@ -2417,31 +2488,20 @@ public class GameEngine {
                 state.addLog("记录伤害 key=" + damageKey);
             }
 
-            // 白银狮子
-            boolean hasSilverLion = responder.getArmor() != null &&
-                    responder.getArmor().getCardType() == CardType.BAI_YIN;
-            if (hasSilverLion) {
-                damage = Math.min(damage, 1);
-                state.addLog("白银狮子将伤害降为1");
-            }
-
-            responder.takeDamage(damage);
-            state.addLog(responder.getUsername() + " 受到" + damage + "点伤害" +
-                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
-            state.addLog(attacker.getUsername() + " 的杀命中" +
-                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
-
-            // 藤甲火伤+1检查（先于铁索传导，使传导使用实际伤害值）
+            // 计算铁索传导基础伤害（含藤甲+1，不含白银狮子减伤，因传导目标独立判定防具）
             boolean shaHasTengJiaFire = responder.getArmor() != null
                     && responder.getArmor().getCardType() == CardType.TENG_JIA
                     && "FIRE".equals(natureStr);
-            if (shaHasTengJiaFire) {
-                responder.takeDamage(1);
-                state.addLog("藤甲使火焰伤害+1");
-                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, responder, null, 1,
-                        Map.of("effectType", "TENG_JIA_FIRE")));
-            }
-            int shaChainDamage = damage + (shaHasTengJiaFire ? 1 : 0);
+            int chainBaseDamage = damage + (shaHasTengJiaFire ? 1 : 0);
+
+            // 使用统一入口计算最终伤害（先藤甲+1，再白银狮子减至1）
+            int finalDamage = calculateFinalDamage(state, responder, damage, natureStr);
+            responder.takeDamage(finalDamage);
+            state.addLog(responder.getUsername() + " 受到" + finalDamage + "点伤害" +
+                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
+            state.addLog(attacker.getUsername() + " 的杀命中" +
+                    (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
+            int shaChainDamage = chainBaseDamage;
 
             // 铁索连环传导（使用含藤甲的实际伤害值）
             // 注意：propagateChainDamage 不再检查濒死，由下方统一处理
@@ -2526,13 +2586,12 @@ public class GameEngine {
                 state.setPendingAction(null);
                 return success("南蛮入侵命中");
             } else if ("JIE_DAO".equals(effectType)) {
-                // 借刀杀人：没出杀，失去武器
+                // 借刀杀人：没出杀，失去武器（给发起者）
                 String weaponId = extra != null ? (String) extra.get("weaponId") : null;
                 if (weaponId != null && responder.getWeapon() != null &&
                         responder.getWeapon().getId().equals(weaponId)) {
-                    GameCard weapon = responder.unequip(responder.getWeapon().getCardType());
+                    GameCard weapon = removeEquipment(responder, state, responder.getWeapon().getCardType());
                     if (weapon != null) {
-                        // 武器给发起者
                         GamePlayer initiator = findPlayerById(state, pending.getSourcePlayerId());
                         if (initiator != null) {
                             initiator.drawCards(Collections.singletonList(weapon));
@@ -2697,11 +2756,6 @@ public class GameEngine {
             }
         }
 
-        // 白银狮子
-        if (target.getArmor() != null && target.getArmor().getCardType() == CardType.BAI_YIN) {
-            damage = Math.min(damage, 1);
-        }
-
         // 防重复伤害机制
         Object rawShaResolveId = extra.get("shaResolveId");
         if (rawShaResolveId != null) {
@@ -2714,18 +2768,12 @@ public class GameEngine {
             state.getResolvedDamageKeys().add(damageKey);
         }
 
-        target.takeDamage(damage);
-        state.addLog(target.getUsername() + " 受到" + damage + "点伤害（贯石斧）");
-
-        // 藤甲火伤（先于铁索传导）
-        boolean guanHasTengJiaFire = target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(natureStr);
-        if (guanHasTengJiaFire) {
-            target.takeDamage(1);
-            state.addLog("藤甲使火伤害+1");
-            fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, target, null, 1,
-                    Map.of("effectType", "TENG_JIA_FIRE")));
-        }
-        int guanChainDamage = damage + (guanHasTengJiaFire ? 1 : 0);
+        // 计算铁索传导基础伤害（含藤甲+1）
+        int guanChainDamage = damage + (target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(natureStr) ? 1 : 0);
+        // 使用统一入口计算最终伤害（先藤甲+1，再白银狮子减至1）
+        int guanFinal = calculateFinalDamage(state, target, damage, natureStr);
+        target.takeDamage(guanFinal);
+        state.addLog(target.getUsername() + " 受到" + guanFinal + "点伤害（贯石斧）");
 
         // 铁索连环传导（使用含藤甲的实际伤害值）
         // propagateChainDamage 不再检查濒死，由下方统一处理
@@ -2845,9 +2893,10 @@ public class GameEngine {
                     return success("杀被藤甲抵挡");
                 }
             }
-            if (target.getArmor() != null && target.getArmor().getCardType() == CardType.BAI_YIN) {
-                damage = Math.min(damage, 1);
-            }
+            // 计算铁索传导基础伤害（含藤甲+1）
+            int hbChainBase = damage + (target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(natureStr) ? 1 : 0);
+            // 使用统一入口计算最终伤害（先藤甲+1，再白银狮子减至1）
+            int hbFinal = calculateFinalDamage(state, target, damage, natureStr);
 
             // 防重复伤害机制
             Object rawShaResolveId = extra.get("shaResolveId");
@@ -2861,18 +2910,9 @@ public class GameEngine {
                 state.getResolvedDamageKeys().add(damageKey);
             }
 
-            target.takeDamage(damage);
-            state.addLog(target.getUsername() + " 受到" + damage + "点伤害");
-
-            // 藤甲火伤（先于铁索传导）
-            boolean hanbingHasTengJiaFire = target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(natureStr);
-            if (hanbingHasTengJiaFire) {
-                target.takeDamage(1);
-                state.addLog("藤甲使火伤害+1");
-                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, attacker, target, null, 1,
-                        Map.of("effectType", "TENG_JIA_FIRE")));
-            }
-            int hanbingChainDamage = damage + (hanbingHasTengJiaFire ? 1 : 0);
+            target.takeDamage(hbFinal);
+            state.addLog(target.getUsername() + " 受到" + hbFinal + "点伤害");
+            int hanbingChainDamage = hbChainBase;
 
             // 铁索连环传导（使用含藤甲的实际伤害值）
             // propagateChainDamage 不再检查濒死，由下方统一处理
@@ -2979,21 +3019,40 @@ public class GameEngine {
         }
 
         int discarded = 0;
+        int maxDiscard = Math.min(2, countDiscardableCards(target));
         java.util.Random rand = new java.util.Random();
+        boolean wantRandom = false;
+
         for (String cid : cardIds) {
-            if ("__RANDOM_HAND__".equals(cid) && !target.getHandCards().isEmpty()) {
+            if ("__RANDOM_HAND__".equals(cid)) {
+                wantRandom = true;
+            } else {
+                GameCard equip = findCard(target, cid);
+                if (equip == null) {
+                    // 判定区牌
+                    equip = target.getJudgeArea().stream().filter(c -> c.getId().equals(cid)).findFirst().orElse(null);
+                    if (equip != null) {
+                        target.getJudgeArea().removeIf(c -> c.getId().equals(cid));
+                        state.discardCard(equip);
+                        discarded++;
+                    }
+                } else if (equip.getCardType().isEquipment()) {
+                    removeEquipment(target, state, equip.getCardType());
+                    state.discardCard(equip);
+                    discarded++;
+                }
+            }
+        }
+
+        // 随机手牌：填满剩余弃牌名额（最多到 maxDiscard 张）
+        if (wantRandom && !target.getHandCards().isEmpty()) {
+            int randomCount = Math.min(maxDiscard - discarded, target.getHandCards().size());
+            for (int i = 0; i < randomCount; i++) {
                 int idx = rand.nextInt(target.getHandCards().size());
                 GameCard hc = target.getHandCards().get(idx);
                 target.removeHandCard(hc.getId());
                 state.discardCard(hc);
                 discarded++;
-            } else if (!"__RANDOM_HAND__".equals(cid)) {
-                GameCard equip = findCard(target, cid);
-                if (equip != null) {
-                    target.unequip(equip.getCardType());
-                    state.discardCard(equip);
-                    discarded++;
-                }
             }
         }
 
@@ -3155,10 +3214,20 @@ public class GameEngine {
 
         if ("GUO_HE".equals(effectType)) {
             if (cardId != null && !"__RANDOM_HAND__".equals(cardId)) {
-                // 使用者选择了指定装备弃置
+                // 选择了指定装备/判定区牌弃置
                 GameCard discardCard = findCard(target, cardId);
-                if (discardCard != null && discardCard.getCardType().isEquipment()) {
-                    target.unequip(discardCard.getCardType());
+                if (discardCard == null) {
+                    // 可能在判定区（findCard只查手牌+装备，不查判定区）
+                    discardCard = target.getJudgeArea().stream().filter(c -> c.getId().equals(cardId)).findFirst().orElse(null);
+                }
+                if (discardCard != null) {
+                    if (discardCard.getCardType().isEquipment()) {
+                        removeEquipment(target, state, discardCard.getCardType());
+                    } else if (discardCard.getCardType().isDelayTrick()) {
+                        target.getJudgeArea().removeIf(c -> c.getId().equals(cardId));
+                    } else {
+                        target.unequip(discardCard.getCardType());
+                    }
                     state.discardCard(discardCard);
                     state.addLog(player.getUsername() + " 弃置了" + target.getUsername() +
                             " 的 " + discardCard.getCardType().getDisplayName());
@@ -3177,10 +3246,19 @@ public class GameEngine {
             return success("过河拆桥成功");
         } else if ("SHUN_SHOU".equals(effectType)) {
             if (cardId != null && !"__RANDOM_HAND__".equals(cardId)) {
-                // 使用者选择了指定装备获得
+                // 选择了指定装备/判定区牌获得
                 GameCard stealCard = findCard(target, cardId);
-                if (stealCard != null && stealCard.getCardType().isEquipment()) {
-                    target.unequip(stealCard.getCardType());
+                if (stealCard == null) {
+                    stealCard = target.getJudgeArea().stream().filter(c -> c.getId().equals(cardId)).findFirst().orElse(null);
+                }
+                if (stealCard != null) {
+                    if (stealCard.getCardType().isEquipment()) {
+                        removeEquipment(target, state, stealCard.getCardType());
+                    } else if (stealCard.getCardType().isDelayTrick()) {
+                        target.getJudgeArea().removeIf(c -> c.getId().equals(cardId));
+                    } else {
+                        target.unequip(stealCard.getCardType());
+                    }
                     player.drawCards(Collections.singletonList(stealCard));
                     state.addLog(player.getUsername() + " 获得了" + target.getUsername() +
                             " 的 " + stealCard.getCardType().getDisplayName());
@@ -3733,7 +3811,7 @@ public class GameEngine {
             if (player.getHandCards().contains(c)) {
                 player.removeHandCard(c.getId());
             } else {
-                player.unequip(c.getCardType());
+                removeEquipment(player, state, c.getCardType());
             }
             state.discardCard(c);
         }
@@ -3752,6 +3830,49 @@ public class GameEngine {
             }
         }
         return null;
+    }
+
+    /**
+     * 计算最终伤害，考虑防具效果（藤甲火焰+1、白银狮子减伤）。
+     * 规则：先计算藤甲火焰+1，再由白银狮子将最终伤害降至1。
+     * 此方法会修改 state 中的日志。
+     */
+    private int calculateFinalDamage(GameState state, GamePlayer target, int baseDamage, String nature) {
+        int damage = baseDamage;
+        boolean hasSilverLion = target.getArmor() != null && target.getArmor().getCardType() == CardType.BAI_YIN;
+        boolean hasTengjiaFire = target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(nature);
+
+        // 先计算藤甲火焰+1
+        if (hasTengjiaFire) {
+            damage++;
+            state.addLog("藤甲使火焰伤害+1");
+        }
+
+        // 再由白银狮子减伤至1
+        if (hasSilverLion && damage > 1) {
+            state.addLog("白银狮子效果触发，伤害减至1点");
+            damage = 1;
+        }
+
+        return damage;
+    }
+
+    /**
+     * 移除玩家装备区指定类型的装备，并触发失去装备的效果（如白银狮子回血）。
+     * 返回被移除的装备卡牌，如果没有则返回null。
+     */
+    private GameCard removeEquipment(GamePlayer player, GameState state, CardType equipSlot) {
+        GameCard removed = player.unequip(equipSlot);
+        if (removed != null) {
+            // 白银狮子：失去时回复1点体力
+            if (removed.getCardType() == CardType.BAI_YIN) {
+                int healed = player.heal(1);
+                if (healed > 0) {
+                    state.addLog(player.getUsername() + " 失去白银狮子，回复1点体力");
+                }
+            }
+        }
+        return removed;
     }
 
     /**
@@ -3781,11 +3902,15 @@ public class GameEngine {
 
                 p.setChained(false);
 
-                // 计算实际传导伤害（每名目标独立判定藤甲火焰+1）
+                // 计算实际传导伤害（每名目标独立判定藤甲火焰+1和白银狮子减伤）
                 int actualDamage = damage;
                 if ("FIRE".equals(nature) && p.getArmor() != null && p.getArmor().getCardType() == CardType.TENG_JIA) {
                     actualDamage++;
                     state.addLog("藤甲效果触发，火焰伤害+1");
+                }
+                if (p.getArmor() != null && p.getArmor().getCardType() == CardType.BAI_YIN && actualDamage > 1) {
+                    state.addLog("白银狮子效果触发，伤害减至1点");
+                    actualDamage = 1;
                 }
 
                 p.takeDamage(actualDamage);

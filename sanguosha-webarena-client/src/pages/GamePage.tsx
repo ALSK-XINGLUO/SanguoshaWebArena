@@ -669,6 +669,55 @@ export default function GamePage() {
               </div>
             );
           }
+          // 借刀杀人：双目标选择
+          const isJieDao = card?.type === 'JIE_DAO';
+          if (isJieDao) {
+            return (
+              <div className="text-target-select">
+                <span>
+                  {selectedTargetIds.length === 0
+                    ? '选择借刀目标（有武器的敌人）：'
+                    : selectedTargetIds.length === 1
+                    ? '选择杀的目标（在借刀目标攻击范围内）：'
+                    : '已选择两个目标'}
+                </span>
+                {gs.players.filter((p) => p.alive && (selectedTargetIds.length > 0 ? p.userId !== currentUser?.userId : true)).map((p) => {
+                  const idx = selectedTargetIds.indexOf(p.userId);
+                  const isSelected = idx >= 0;
+                  // 已经选了借刀目标后，不能再选自己作为杀目标
+                  const blocked = selectedTargetIds.length === 1 && p.userId === selectedTargetIds[0];
+                  return (
+                    <button key={p.userId}
+                      className={`text-btn ${isSelected ? 'primary' : ''}`}
+                      disabled={blocked || isSelected}
+                      onClick={() => {
+                        if (selectedTargetIds.length === 0 || (selectedTargetIds.length === 1 && p.userId !== selectedTargetIds[0])) {
+                          setSelectedTargetIds(prev => [...prev, p.userId]);
+                        }
+                      }}>
+                      {p.username}{isSelected ? `（第${idx + 1}目标）` : ''}
+                    </button>
+                  );
+                })}
+                {selectedTargetIds.length === 2 && (
+                  <div className="text-dim">
+                    借刀目标：{gs.players.find(p => p.userId === selectedTargetIds[0])?.username}，
+                    杀目标：{gs.players.find(p => p.userId === selectedTargetIds[1])?.username}
+                  </div>
+                )}
+                <div className="text-actions" style={{ marginTop: 6 }}>
+                  <button className="text-btn primary"
+                    disabled={selectedTargetIds.length < 2}
+                    onClick={() => {
+                      send('PLAY_CARD', { gameId, cardId: selectedCardId, targetUserIds: selectedTargetIds.map(String) });
+                      setSelectedCardId(null);
+                      setSelectedTargetIds([]);
+                    }}>确定使用</button>
+                  <button className="text-btn" onClick={() => { setSelectedCardId(null); setSelectedTargetIds([]); }}>取消</button>
+                </div>
+              </div>
+            );
+          }
           return needsTarget ? (
             <div className="text-target-select">
               选择目标:
