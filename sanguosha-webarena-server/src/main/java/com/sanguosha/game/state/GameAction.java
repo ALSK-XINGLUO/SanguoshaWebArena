@@ -12,7 +12,13 @@ import java.util.Map;
  */
 @Data
 public class GameAction {
-    private String actionType;         // 动作类型: RESPOND_SHA, RESPOND_SHAN, RESPOND_WUXIE, CHOOSE_TARGET, DISCARD, etc.
+    /** 预留的动作类型常量 */
+    public static final String WAIT_WUXIE_RESPONSE = "WAIT_WUXIE_RESPONSE";
+    public static final String WAIT_EQUIP_TRIGGER = "WAIT_EQUIP_TRIGGER";
+    public static final String WAIT_SKILL_RESPONSE = "WAIT_SKILL_RESPONSE";
+    public static final String WAIT_CONVERT_CARD = "WAIT_CONVERT_CARD";
+
+    private String actionType;         // 动作类型: RESPOND_SHA, RESPOND_SHAN, CHOOSE_TARGET, DISCARD, DYING_REQUIRE_TAO, WAIT_WUXIE_RESPONSE, WAIT_EQUIP_TRIGGER, etc.
     private String sourceCardId;       // 触发此动作的卡牌ID
     private Long sourcePlayerId;       // 触发此动作的玩家
     private List<String> optionalCardIds; // 可选使用的卡牌ID列表

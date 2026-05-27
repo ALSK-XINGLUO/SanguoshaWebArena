@@ -1,18 +1,23 @@
 package com.sanguosha.game.card;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 
 /**
- * 一张具体的游戏卡牌（包含花色、点数、类型）
+ * 一张具体的游戏卡牌（包含花色、点数、类型、属性）
  */
 @Data
-@AllArgsConstructor
 public class GameCard {
     private String id;           // 唯一标识
     private CardType cardType;   // 卡牌类型
     private Suit suit;           // 花色
     private int number;          // 点数 (1-13, A=1, J=11, Q=12, K=13)
+    private Nature nature = Nature.NORMAL;  // 属性伤害类型
+
+    public enum Nature {
+        NORMAL,     // 普通
+        FIRE,       // 火
+        THUNDER     // 雷
+    }
 
     public enum Suit {
         SPADE("♠"),     // 黑桃
@@ -23,6 +28,23 @@ public class GameCard {
         private final String symbol;
         Suit(String symbol) { this.symbol = symbol; }
         public String getSymbol() { return symbol; }
+    }
+
+    public GameCard() {}
+
+    public GameCard(String id, CardType cardType, Suit suit, int number) {
+        this.id = id;
+        this.cardType = cardType;
+        this.suit = suit;
+        this.number = number;
+    }
+
+    public GameCard(String id, CardType cardType, Suit suit, int number, Nature nature) {
+        this.id = id;
+        this.cardType = cardType;
+        this.suit = suit;
+        this.number = number;
+        this.nature = nature;
     }
 
     /**
@@ -42,7 +64,10 @@ public class GameCard {
      * 获取显示名称（含花色和点数）
      */
     public String getDisplayName() {
-        return suit.getSymbol() + getNumberDisplay() + " " + cardType.getDisplayName();
+        String suffix = "";
+        if (nature == Nature.FIRE) suffix = "🔥";
+        else if (nature == Nature.THUNDER) suffix = "⚡";
+        return suit.getSymbol() + getNumberDisplay() + " " + cardType.getDisplayName() + suffix;
     }
 
     /**

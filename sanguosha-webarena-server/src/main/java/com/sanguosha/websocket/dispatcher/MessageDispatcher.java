@@ -60,6 +60,12 @@ public class MessageDispatcher {
                 // Surrender
                 case MessageType.SURRENDER -> gameService.handleSurrender(userId, username, session, data);
 
+                // Skill
+                case MessageType.USE_SKILL -> gameService.handleUseSkill(userId, username, session, data);
+
+                // Debug
+                case MessageType.TEST_CHANGE_HAND -> gameService.handleTestChangeHand(userId, username, session, data);
+
                 default -> sendError(session, "未知消息类型: " + type);
             }
         } catch (Exception e) {

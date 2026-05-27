@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { send, on } from '../api/websocket';
+import { showToast } from '../components/Toast';
 
 interface PlayerSlot {
   userId: number;
@@ -48,7 +49,7 @@ export default function RoomPage() {
     });
 
     const unsubError = on('ERROR', (_, data) => {
-      alert(data.message);
+      showToast(data.message, 'error');
     });
 
     const unsubGameStart = on('GAME_START', () => {

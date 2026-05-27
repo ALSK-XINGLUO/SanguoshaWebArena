@@ -24,6 +24,16 @@ public class MessageType {
     public static final String SURRENDER = "SURRENDER";
     public static final String GAME_SURRENDER = "GAME_SURRENDER";
 
+    // Skill
+    public static final String USE_SKILL = "USE_SKILL";
+    public static final String SKILL_TRIGGER_RESPONSE = "SKILL_TRIGGER_RESPONSE";
+
+    // Debug
+    public static final String TEST_CHANGE_HAND = "TEST_CHANGE_HAND";
+
+    // Toast
+    public static final String TOAST = "TOAST";
+
     // System
     public static final String ERROR = "ERROR";
     public static final String RECONNECT_ROOM = "RECONNECT_ROOM";

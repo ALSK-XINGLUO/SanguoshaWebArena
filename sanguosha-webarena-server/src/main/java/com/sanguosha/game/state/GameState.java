@@ -32,6 +32,9 @@ public class GameState {
     // 当前待处理事件（用于玩家交互）
     private GameAction pendingAction;         // 等待玩家响应的动作
 
+    // 临时存储的卡牌（五谷丰登等中间步骤使用）
+    private List<GameCard> tempCards;
+
     // 日志
     private List<String> gameLog;
 
@@ -42,6 +45,7 @@ public class GameState {
         this.drawPile = Collections.synchronizedList(new ArrayList<>());
         this.discardPile = Collections.synchronizedList(new ArrayList<>());
         this.gameLog = new CopyOnWriteArrayList<>();
+        this.tempCards = new CopyOnWriteArrayList<>();
         this.currentTurnIndex = 0;
         this.turnNumber = 1;
         this.phase = "PREPARE";

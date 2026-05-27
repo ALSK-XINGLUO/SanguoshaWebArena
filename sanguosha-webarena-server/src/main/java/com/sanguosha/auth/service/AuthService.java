@@ -43,10 +43,17 @@ public class AuthService {
         // generate token
         String token = jwtConfig.generateToken(user.getId(), user.getUsername());
 
+        Map<String, Object> userData = new HashMap<>();
+        userData.put("userId", user.getId());
+        userData.put("username", user.getUsername());
+        userData.put("nickname", user.getNickname());
+        userData.put("level", user.getLevel());
+        userData.put("winCount", user.getWinCount());
+        userData.put("loseCount", user.getLoseCount());
+
         Map<String, Object> result = new HashMap<>();
         result.put("token", token);
-        result.put("userId", user.getId());
-        result.put("nickname", user.getNickname());
+        result.put("user", userData);
         return result;
     }
 
@@ -65,10 +72,17 @@ public class AuthService {
 
         String token = jwtConfig.generateToken(user.getId(), user.getUsername());
 
+        Map<String, Object> userData = new HashMap<>();
+        userData.put("userId", user.getId());
+        userData.put("username", user.getUsername());
+        userData.put("nickname", user.getNickname());
+        userData.put("level", user.getLevel());
+        userData.put("winCount", user.getWinCount());
+        userData.put("loseCount", user.getLoseCount());
+
         Map<String, Object> result = new HashMap<>();
         result.put("token", token);
-        result.put("userId", user.getId());
-        result.put("nickname", user.getNickname());
+        result.put("user", userData);
         return result;
     }
 

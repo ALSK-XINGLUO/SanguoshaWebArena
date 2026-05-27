@@ -2,6 +2,8 @@ import { useEffect, useState, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { send, on } from '../api/websocket';
+import { showToast } from '../components/Toast';
+import { confirm } from '../components/ConfirmDialog';
 import './GamePage.css';
 
 interface CardDTO {
@@ -84,6 +86,11 @@ function formatCard(card: CardDTO): string {
   return `${suit}${card.numberDisplay} ${card.displayName}`;
 }
 
+/** 判断卡牌是否不能以自己为目标 */
+function isOffensiveCardType(type: string): boolean {
+  return ['SHA', 'JUE_DOU', 'GUO_HE', 'SHUN_SHOU'].includes(type);
+}
+
 export default function GamePage() {
   const navigate = useNavigate();
   const { roomId } = useParams<{ roomId: string }>();
@@ -93,6 +100,9 @@ export default function GamePage() {
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [gameOver, setGameOver] = useState(false);
+  const [wuguSubmitting, setWuguSubmitting] = useState(false);
+  const [skillMode, setSkillMode] = useState<string | null>(null);
+  const [selectedSkillCardIds, setSelectedSkillCardIds] = useState<string[]>([]);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const me = gs?.players.find((p) => p.userId === currentUser?.userId);
@@ -100,12 +110,17 @@ export default function GamePage() {
   const currentPlayer = gs ? gs.players[gs.currentTurnIndex] : null;
   const isMyTurn = me != null && currentPlayer?.userId === me.userId;
   const isPlayPhase = gs?.phase === 'PLAY';
+  const hasZhangBa = me?.weapon?.type === 'ZHANG_BA';
 
   useEffect(() => {
     const unsubGameState = on('GAME_STATE', (_, data) => {
       if (data.gameState) {
         const dto = data.gameState as GameStateDTO;
         setGs(dto);
+        setWuguSubmitting(false);
+        setSelectedCardId(null);
+        setSkillMode(null);
+        setSelectedSkillCardIds([]);
         if (data.gameId) setGameId(data.gameId);
         if (dto.log) setLogs(dto.log);
         if (dto.finished) setGameOver(true);
@@ -136,7 +151,11 @@ export default function GamePage() {
     });
 
     const unsubError = on('ERROR', (_, data) => {
-      alert(data.message);
+      showToast(data.message, 'error');
+    });
+
+    const unsubToast = on('TOAST', (_, data) => {
+      showToast(data.message, data.type === 'error' ? 'error' : 'success', 3000);
     });
 
     send('FETCH_GAME_STATE', { roomId });
@@ -146,6 +165,7 @@ export default function GamePage() {
       unsubGameStart();
       unsubGameOver();
       unsubError();
+      unsubToast();
     };
   }, []);
 
@@ -156,6 +176,12 @@ export default function GamePage() {
   const handlePlayCard = (cardId: string) => {
     if (!isMyTurn || gameOver || !isPlayPhase) return;
     setSelectedCardId((prev) => (prev === cardId ? null : cardId));
+  };
+
+  const handleUseCard = () => {
+    if (!selectedCardId || !isMyTurn || gameOver) return;
+    send('PLAY_CARD', { gameId, cardId: selectedCardId });
+    setSelectedCardId(null);
   };
 
   const handleTargetPlayer = (userId: number) => {
@@ -174,13 +200,44 @@ export default function GamePage() {
     setSelectedCardId(null);
   };
 
+  const handleZhangBaActive = (userId: number) => {
+    if (selectedSkillCardIds.length !== 2 || gameOver) return;
+    send('USE_SKILL', {
+      gameId,
+      skillCode: 'ZHANG_BA_SHE_MAO',
+      selectedCardIds: selectedSkillCardIds,
+      targetUserId: String(userId),
+    });
+    setSkillMode(null);
+    setSelectedSkillCardIds([]);
+    setSelectedCardId(null);
+  };
+
+  const handleZhangBaResponse = () => {
+    if (selectedSkillCardIds.length !== 2 || gameOver) return;
+    send('USE_SKILL', {
+      gameId,
+      skillCode: 'ZHANG_BA_SHE_MAO',
+      selectedCardIds: selectedSkillCardIds,
+      isResponse: true,
+    });
+    setSkillMode(null);
+    setSelectedSkillCardIds([]);
+    setSelectedCardId(null);
+  };
+
   const pendingAction = gs?.pendingAction;
   const isMyPendingAction = pendingAction && pendingAction.optionalTargetIds?.includes(currentUser?.userId ?? 0);
+  const isWuxieResponse = pendingAction?.actionType === 'WAIT_WUXIE_RESPONSE' && isMyPendingAction;
 
   const handleConfirmPending = (cardId: string | null) => {
     if (!pendingAction || !isMyPendingAction) return;
+    if (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting) return;
     send('PENDING_RESPONSE', { gameId, cardId });
     setSelectedCardId(null);
+    if (pendingAction.actionType === 'CHOOSE_WUGU_CARD') {
+      setWuguSubmitting(true);
+    }
   };
 
   const handleSkipPending = () => {
@@ -189,15 +246,21 @@ export default function GamePage() {
     setSelectedCardId(null);
   };
 
-  const handleSurrender = () => {
+  const handleSurrender = async () => {
     if (gameOver || !gameId) return;
-    if (window.confirm('确定要认输吗？')) {
+    const ok = await confirm('确定要认输吗？', '认输');
+    if (ok) {
       send('SURRENDER', { gameId });
     }
   };
 
   const handleBackToLobby = () => {
     navigate('/lobby');
+  };
+
+  const handleTestChangeHand = () => {
+    if (gameOver || !gameId) return;
+    send('TEST_CHANGE_HAND', { gameId, roomId });
   };
 
   if (!gs) {
@@ -239,6 +302,9 @@ export default function GamePage() {
         <span>第{gs.turnNumber}回合</span>
         <span>{isMyTurn ? '← 你的回合' : `${currentPlayer?.username || '对手'}的回合 →`}</span>
         {!gameOver && <button className="text-btn surrender" onClick={handleSurrender}>认输</button>}
+        {!gameOver && !pendingAction && (
+          <button className="text-btn debug" onClick={handleTestChangeHand}>测试换牌</button>
+        )}
         <button className="text-btn" onClick={handleBackToLobby}>返回大厅</button>
       </div>
 
@@ -262,43 +328,168 @@ export default function GamePage() {
           {pendingAction.actionType === 'DISCARD' && (
             <div className="text-pending-hint">需弃 {pendingAction.discardCount} 张</div>
           )}
-          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
-            <div className="text-pending-cards">
-              {pendingAction.optionalCards.map((card) => (
-                <button
-                  key={card.id}
-                  className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''}`}
-                  onClick={() => setSelectedCardId(selectedCardId === card.id ? null : card.id)}
-                >
-                  {formatCard(card)}
-                </button>
-              ))}
+          {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && (
+            <div className="text-pending-hint">
+              [调试] actionType={pendingAction.actionType} targetUserId={pendingAction.optionalTargetIds?.[0]} currentUserId={currentUser?.userId} cards={pendingAction.optionalCards?.length}
             </div>
           )}
-          {(!pendingAction.optionalCards || pendingAction.optionalCards.length === 0) && (
+          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
+            <div className="text-pending-cards">
+              {pendingAction.optionalCards.map((card) => {
+                const isDisabled = pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting;
+                return (
+                  <button
+                    key={card.id}
+                    disabled={isDisabled}
+                    className={`text-card-btn ${card.id === '__RANDOM_HAND__' ? '' : isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''}`}
+                    onClick={() => !isDisabled && setSelectedCardId(selectedCardId === card.id ? null : card.id)}
+                  >
+                    {card.id === '__RANDOM_HAND__' ? `[随机] ${card.displayName}` : formatCard(card)}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {(!pendingAction.optionalCards || pendingAction.optionalCards.length === 0) && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && (
             <div className="text-pending-hint">没有可用卡牌</div>
           )}
-          <div className="text-pending-actions">
-            {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
-              <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId}>
-                确认
+          {/* WAIT_EQUIP_TRIGGER: 装备触发（麒麟弓选马/青龙偃月刀选杀/贯石斧确认/寒冰剑确认） */}
+          {pendingAction.actionType === 'WAIT_EQUIP_TRIGGER' && (
+            <div className="text-pending-actions">
+              {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 ? (
+                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId}>
+                  发动
+                </button>
+              ) : (
+                <button className="text-btn primary" onClick={() => handleConfirmPending('__CONFIRM__')}>
+                  确认发动
+                </button>
+              )}
+              <button className="text-btn" onClick={handleSkipPending}>不发动</button>
+            </div>
+          )}
+
+          {/* WAIT_WUXIE_RESPONSE: 无懈可击响应 */}
+          {pendingAction.actionType === 'WAIT_WUXIE_RESPONSE' && (
+            <>
+              <div className="text-pending-hint">选择手牌中的无懈可击，或点击跳过</div>
+              <div className="text-pending-actions">
+                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)} disabled={!selectedCardId}>
+                  使用
+                </button>
+                <button className="text-btn" onClick={handleSkipPending}>跳过</button>
+              </div>
+            </>
+          )}
+
+          {/* 通用按钮 */}
+          {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && (
+            <div className="text-pending-actions">
+              {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
+                <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
+                  disabled={!selectedCardId || (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting)}>
+                  {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting ? '选择中...' : '确认'}
+                </button>
+              )}
+              <button className="text-btn" onClick={handleSkipPending}
+                disabled={pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting}>
+                跳过
               </button>
-            )}
-            <button className="text-btn" onClick={handleSkipPending}>跳过</button>
-          </div>
+            </div>
+          )}
+
+          {/* 丈八蛇矛选项（RESPOND_SHA 时可用） */}
+          {pendingAction.actionType === 'RESPOND_SHA' && hasZhangBa && (me?.handCards?.length ?? 0) >= 2 && !skillMode && (
+            <div className="text-skill-option">
+              <button className="text-btn skill" onClick={() => {
+                setSkillMode('ZHANG_BA_SHE_MAO');
+                setSelectedSkillCardIds([]);
+              }}>
+                使用丈八蛇矛（两张手牌当杀打出）
+              </button>
+            </div>
+          )}
+          {pendingAction.actionType === 'RESPOND_SHA' && skillMode === 'ZHANG_BA_SHE_MAO' && (
+            <div className="text-skill-option">
+              <span>已选 {selectedSkillCardIds.length}/2 张手牌</span>
+              {selectedSkillCardIds.length === 2 && (
+                <button className="text-btn primary" onClick={handleZhangBaResponse}>
+                  确认出杀
+                </button>
+              )}
+              <button className="text-btn" onClick={() => { setSkillMode(null); setSelectedSkillCardIds([]); }}>
+                取消
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Battlefield — target selection */}
+      {/* 等待提示 — pending action 存在但不是你的回合 */}
+      {pendingAction && !isMyPendingAction && pendingAction.actionType === 'CHOOSE_WUGU_CARD' && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待对手选择五谷丰登牌...</div>
+        </div>
+      )}
+      {pendingAction && !isMyPendingAction && pendingAction.actionType === 'WAIT_EQUIP_TRIGGER' && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待对手选择是否发动装备效果...</div>
+        </div>
+      )}
+      {pendingAction && !isMyPendingAction && pendingAction.actionType === 'WAIT_WUXIE_RESPONSE' && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待对手使用无懈可击...</div>
+        </div>
+      )}
+      {/* 通用等待提示 */}
+      {pendingAction && !isMyPendingAction && !['CHOOSE_WUGU_CARD', 'WAIT_EQUIP_TRIGGER', 'WAIT_WUXIE_RESPONSE'].includes(pendingAction.actionType) && (
+        <div className="text-pending">
+          <div className="text-pending-msg">等待对手操作...</div>
+        </div>
+      )}
+
+      {/* Battlefield — card action */}
       <div className="text-section">
-        {selectedCardId && isPlayPhase && isMyTurn && !gameOver && !pendingAction && (
+        {selectedCardId && isPlayPhase && isMyTurn && !gameOver && !pendingAction && (() => {
+          const card = myHandCards.find(c => c.id === selectedCardId);
+          const needsTarget = card && (card.category === '基本牌' ? card.type === 'SHA' :
+            card.category === '锦囊牌' ? !['WU_ZHONG', 'TAO_YUAN'].includes(card.type) : false);
+          const isOffensive = card && isOffensiveCardType(card.type);
+          return needsTarget ? (
+            <div className="text-target-select">
+              选择目标:
+              {gs.players.filter((p) => p.alive && (!isOffensive || p.userId !== currentUser?.userId)).map((p) => (
+                <button key={p.userId} className="text-btn primary" onClick={() => handleTargetPlayer(p.userId)}>
+                  {p.username}
+                </button>
+              ))}
+              {card?.type === 'TIE_SUO' && (
+                <button className="text-btn" onClick={() => {
+                  send('PLAY_CARD', { gameId, cardId: selectedCardId });
+                  setSelectedCardId(null);
+                }}>重铸（弃牌摸一张）</button>
+              )}
+              <button className="text-btn" onClick={() => setSelectedCardId(null)}>取消</button>
+            </div>
+          ) : (
+            <div className="text-target-select">
+              <span>使用 </span>
+              <button className="text-btn primary" onClick={handleUseCard}>确定使用</button>
+              <button className="text-btn" onClick={() => setSelectedCardId(null)}>取消</button>
+            </div>
+          );
+        })()}
+
+        {/* 丈八蛇矛 target selection */}
+        {skillMode === 'ZHANG_BA_SHE_MAO' && selectedSkillCardIds.length === 2 && isPlayPhase && isMyTurn && !gameOver && !pendingAction && (
           <div className="text-target-select">
-            选择目标:
-            {gs.players.filter((p) => p.alive).map((p) => (
-              <button key={p.userId} className="text-btn primary" onClick={() => handleTargetPlayer(p.userId)}>
+            选择目标（丈八蛇矛）:
+            {gs.players.filter((p) => p.alive && p.userId !== currentUser?.userId).map((p) => (
+              <button key={p.userId} className="text-btn primary" onClick={() => handleZhangBaActive(p.userId)}>
                 {p.username}
               </button>
             ))}
+            <button className="text-btn" onClick={() => { setSkillMode(null); setSelectedSkillCardIds([]); }}>取消</button>
           </div>
         )}
 
@@ -321,27 +512,66 @@ export default function GamePage() {
             <span className="text-judge">{judgeText(me)}</span>
           </div>
 
+          {/* Skill mode banner */}
+          {skillMode === 'ZHANG_BA_SHE_MAO' && (
+            <div className="text-skill-banner">
+              丈八蛇矛：选择两张手牌当杀使用
+              （已选 {selectedSkillCardIds.length}/2 张）
+              <button className="text-btn" onClick={() => { setSkillMode(null); setSelectedSkillCardIds([]); }}>取消</button>
+            </div>
+          )}
+
           {/* Hand cards as plain text buttons */}
           {!gameOver && (
             <div className="text-handcards">
               {myHandCards.length === 0 && <span className="text-dim">手牌为空</span>}
-              {myHandCards.map((card) => (
-                <button
-                  key={card.id}
-                  className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''}`}
-                  onClick={() => isPlayPhase && isMyTurn && !pendingAction && handlePlayCard(card.id)}
-                  disabled={!isPlayPhase || !isMyTurn || !!pendingAction}
-                  title={card.displayName}
-                >
-                  [{formatCard(card)}]
-                </button>
-              ))}
+              {myHandCards.map((card) => {
+                const isSkillSelected = selectedSkillCardIds.includes(card.id);
+                return (
+                  <button
+                    key={card.id}
+                    className={`text-card-btn ${isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''} ${isSkillSelected ? 'skill-sel' : ''}`}
+                    onClick={() => {
+                      if (skillMode === 'ZHANG_BA_SHE_MAO') {
+                        if (isSkillSelected) {
+                          setSelectedSkillCardIds(prev => prev.filter(id => id !== card.id));
+                        } else if (selectedSkillCardIds.length < 2) {
+                          setSelectedSkillCardIds(prev => [...prev, card.id]);
+                        }
+                      } else if (isWuxieResponse && card.type === 'WU_XIE') {
+                        setSelectedCardId(prev => (prev === card.id ? null : card.id));
+                      } else if (isPlayPhase && isMyTurn && !pendingAction) {
+                        handlePlayCard(card.id);
+                      }
+                    }}
+                    disabled={
+                      skillMode ? false :
+                      isWuxieResponse ? (card.type !== 'WU_XIE') :
+                      (!isPlayPhase || !isMyTurn || !!pendingAction)
+                    }
+                    title={card.displayName}
+                  >
+                    [{isSkillSelected ? '✓ ' : ''}{formatCard(card)}]
+                  </button>
+                );
+              })}
             </div>
           )}
 
           {/* Action buttons */}
           {isPlayPhase && isMyTurn && !pendingAction && !gameOver && (
             <div className="text-actions">
+              {hasZhangBa && myHandCards.length >= 2 && !skillMode && (
+                <button className="text-btn skill" onClick={() => {
+                  setSkillMode('ZHANG_BA_SHE_MAO');
+                  setSelectedSkillCardIds([]);
+                }}>
+                  丈八蛇矛
+                </button>
+              )}
+              {skillMode === 'ZHANG_BA_SHE_MAO' && selectedSkillCardIds.length === 2 && !pendingAction && (
+                <span className="text-dim">请选择目标</span>
+              )}
               <button className="text-btn primary" onClick={handleEndTurn}>结束出牌</button>
             </div>
           )}

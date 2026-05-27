@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { connect, disconnect, on } from './api/websocket';
+import { ToastContainer } from './components/Toast';
+import { ConfirmDialog } from './components/ConfirmDialog';
 import LoginPage from './pages/LoginPage';
 import RegisterPage from './pages/RegisterPage';
 import LobbyPage from './pages/LobbyPage';
@@ -92,6 +94,8 @@ function App() {
   return (
     <BrowserRouter>
       <AppRoutes />
+      <ToastContainer />
+      <ConfirmDialog />
     </BrowserRouter>
   );
 }

@@ -1,9 +1,12 @@
 package com.sanguosha.game.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sanguosha.game.card.GameCard;
 import com.sanguosha.game.engine.GameEngine;
+import com.sanguosha.game.player.GamePlayer;
 import com.sanguosha.game.state.GameAction;
 import com.sanguosha.game.state.GameState;
+import com.sanguosha.game.skill.SkillUseRequest;
 import com.sanguosha.room.entity.Room;
 import com.sanguosha.room.service.RoomManager;
 import com.sanguosha.websocket.message.MessageType;
@@ -15,9 +18,9 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.UUID;
 
 /**
@@ -99,6 +102,12 @@ public class GameService {
                 }
 
                 // 没有pending action，阶段自动推进
+            }
+
+            // 处理在 processPhase 内部设置的 pendingAction（如闪电触发的濒死求桃）
+            if (state.getPendingAction() != null) {
+                broadcastGameState(room, state);
+                return;
             }
 
             if (state.isFinished()) {
@@ -343,6 +352,138 @@ public class GameService {
     }
 
     /**
+     * 测试换牌 — 测试功能，不限制次数
+     */
+    public void handleTestChangeHand(Long userId, String username, WebSocketSession session, Object data) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) data;
+        String gameId = (String) params.get("gameId");
+        String roomId = (String) params.get("roomId");
+
+        // 尝试通过 gameId 或 roomId 查找游戏
+        GameState state = gameId != null ? gameEngine.getGame(gameId) : null;
+        if (state == null && roomId != null) {
+            state = gameEngine.getGameByRoomId(roomId);
+        }
+        if (state == null) {
+            sendError(session, "游戏不存在");
+            return;
+        }
+
+        if (state.isFinished()) {
+            sendError(session, "游戏已结束");
+            return;
+        }
+
+        // 查找玩家
+        GamePlayer player = state.getPlayers().stream()
+                .filter(p -> p.getUserId().equals(userId))
+                .findFirst().orElse(null);
+        if (player == null || !player.isAlive()) {
+            sendError(session, "玩家不存在或已死亡");
+            return;
+        }
+
+        // 有 pendingAction 时不允许换牌
+        if (state.getPendingAction() != null) {
+            sendError(session, "当前有等待响应的动作，不能换牌");
+            return;
+        }
+
+        // 换牌逻辑：旧手牌入弃牌堆，从牌堆摸等量的牌
+        int handSize = player.getHandCards().size();
+        if (handSize == 0) {
+            handSize = 4; // 手牌为空时默认摸4张
+        }
+
+        // 将旧手牌放入弃牌堆
+        for (GameCard c : new ArrayList<>(player.getHandCards())) {
+            state.discardCard(c);
+        }
+        player.getHandCards().clear();
+
+        // 摸新牌（牌堆不足时自动洗弃牌堆）
+        List<GameCard> drawn = state.drawCards(handSize);
+        player.drawCards(drawn);
+
+        state.addLog(username + " 使用测试换牌，重新获得 " + drawn.size() + " 张手牌");
+
+        log.info("测试换牌: {} 手牌 {}→{} 张", username, handSize, drawn.size());
+
+        Map<String, Object> toastData = Map.of("message", "已重新换牌", "type", "success");
+        sendToPlayer(userId, MessageType.TOAST, toastData);
+
+        // 广播 GAME_SYNC
+        Room room = state.getRoomId() != null ? roomManager.getRoom(state.getRoomId()) : null;
+        if (room != null) {
+            broadcastGameState(room, state);
+        }
+    }
+
+    /**
+     * 处理玩家使用主动技能（如丈八蛇矛转化杀）
+     */
+    public void handleUseSkill(Long userId, String username, WebSocketSession session, Object data) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> params = (Map<String, Object>) data;
+        String gameId = (String) params.get("gameId");
+        String skillCode = (String) params.get("skillCode");
+
+        if (gameId == null || skillCode == null) {
+            sendError(session, "参数不完整");
+            return;
+        }
+
+        GameState state = gameEngine.getGame(gameId);
+        if (state == null) {
+            sendError(session, "游戏不存在");
+            return;
+        }
+
+        Room room = roomManager.getRoom(state.getRoomId());
+        if (room == null) {
+            sendError(session, "房间不存在");
+            return;
+        }
+
+        @SuppressWarnings("unchecked")
+        List<String> selectedCardIds = (List<String>) params.get("selectedCardIds");
+        String targetUserId = (String) params.get("targetUserId");
+        Boolean isResponse = (Boolean) params.get("isResponse");
+        String targetCardId = (String) params.get("targetCardId");
+
+        SkillUseRequest request = SkillUseRequest.builder()
+                .skillCode(skillCode)
+                .selectedCardIds(selectedCardIds)
+                .targetUserId(targetUserId)
+                .targetCardId(targetCardId)
+                .isResponse(isResponse != null && isResponse)
+                .build();
+
+        GameEngine.ActionResult result = gameEngine.useSkill(state, userId, request);
+
+        if (!result.success()) {
+            sendError(session, result.message());
+            return;
+        }
+
+        log.info("玩家 {} 使用技能: {}, 结果: {}", username, skillCode, result.message());
+
+        // 广播更新后的状态（技能内部已更新 pendingAction 等）
+        broadcastGameState(room, state);
+
+        // 检查游戏是否结束
+        if (state.isFinished()) {
+            broadcastGameOver(room, state);
+            room.setStatus("WAITING");
+            return;
+        }
+
+        // 继续处理阶段
+        processGamePhase(room, state);
+    }
+
+    /**
      * 定时检查断线超时玩家（每15秒执行一次）
      */
     @Scheduled(fixedRate = 15000)
@@ -385,17 +526,12 @@ public class GameService {
     }
 
     /**
-     * 5秒后自动关闭房间并清理游戏状态
+     * 立即关闭房间并清理游戏状态
      */
     private void scheduleRoomClose(String roomId, String gameId) {
-        new Timer(true).schedule(new TimerTask() {
-            @Override
-            public void run() {
-                gameEngine.removeGame(gameId);
-                roomManager.removeRoom(roomId);
-                log.info("房间 {} (游戏 {}) 已自动关闭", roomId, gameId);
-            }
-        }, 5000);
+        gameEngine.removeGame(gameId);
+        roomManager.removeRoom(roomId);
+        log.info("房间 {} (游戏 {}) 已自动关闭", roomId, gameId);
     }
 
     /**

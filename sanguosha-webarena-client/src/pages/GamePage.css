@@ -157,6 +157,47 @@
   cursor: not-allowed;
 }
 
+.text-card-btn.skill-sel {
+  border-color: #7ee787;
+  background: rgba(126, 231, 135, 0.15);
+  color: #7ee787;
+  font-weight: bold;
+}
+
+/* ===== Skill button ===== */
+.text-btn.skill {
+  background: #8957e5;
+  border-color: #8957e5;
+  color: #fff;
+}
+
+.text-btn.skill:hover {
+  background: #a371f7;
+}
+
+/* ===== Skill mode banner ===== */
+.text-skill-banner {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0 2px 0;
+  font-size: 13px;
+  color: #7ee787;
+}
+
+/* ===== Skill option in pending ===== */
+.text-skill-option {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #30363d;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #8b949e;
+}
+
 /* ===== Pending action ===== */
 .text-pending {
   background: #161b22;

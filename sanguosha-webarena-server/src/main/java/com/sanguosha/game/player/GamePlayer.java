@@ -34,6 +34,13 @@ public class GamePlayer {
     private int shaCountThisTurn;              // 本回合已用杀次数
     private boolean usedAlcoholThisTurn;       // 本回合是否使用过酒
 
+    // 铁索连环状态
+    private boolean chained;
+
+    // 判定阶段跳过标记（由乐不思蜀/兵粮寸断/闪电等设置）
+    private boolean skipDrawPhase;             // 跳过摸牌阶段
+    private boolean skipPlayPhase;             // 跳过出牌阶段
+
     public GamePlayer(Long userId, String username, int slotIndex) {
         this.userId = userId;
         this.username = username;
@@ -166,6 +173,8 @@ public class GamePlayer {
         return switch (weapon.getCardType()) {
             case QING_LONG, ZHANG_BA, GUAN_SHI -> 3;
             case FANG_TIAN, ZHU_QUE -> 4;
+            case GU_DING_DAO -> 2;
+            case ZHUGE_LIAN_NU -> 1;
             case QI_LIN -> 5;
             case HAN_BING, QING_GANG, CI_XIONG -> 2;
             default -> 1;
@@ -186,6 +195,8 @@ public class GamePlayer {
         usedShaThisTurn = false;
         shaCountThisTurn = 0;
         usedAlcoholThisTurn = false;
+        skipDrawPhase = false;
+        skipPlayPhase = false;
     }
 
     /**
@@ -217,6 +228,10 @@ public class GamePlayer {
         map.put("alive", alive);
         map.put("handCardCount", handCards.size());
 
+        if (chained) {
+            map.put("chained", true);
+        }
+
         if (isSelf) {
             List<Map<String, Object>> handList = handCards.stream().map(this::cardToMap).toList();
             map.put("handCards", handList);
@@ -243,6 +258,7 @@ public class GamePlayer {
         m.put("suitName", card.getSuit().name());
         m.put("number", card.getNumber());
         m.put("numberDisplay", card.getNumberDisplay());
+        m.put("nature", card.getNature().name());
         return m;
     }
 }
