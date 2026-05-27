@@ -88,6 +88,29 @@ function formatCard(card: CardDTO): string {
 }
 
 /** 判断卡牌是否不能以自己为目标 */
+/** 计算玩家攻击范围（与后端 GamePlayer.getAttackRange 一致） */
+function getAttackRangeByWeapon(weapon: { type: string } | null): number {
+  if (!weapon) return 1;
+  switch (weapon.type) {
+    case 'QING_LONG': case 'ZHANG_BA': case 'GUAN_SHI': return 3;
+    case 'FANG_TIAN': case 'ZHU_QUE': return 4;
+    case 'GU_DING_DAO': return 2;
+    case 'ZHUGE_LIAN_NU': return 1;
+    case 'QI_LIN': return 5;
+    case 'HAN_BING': case 'QING_GANG': case 'CI_XIONG': return 2;
+    default: return 1;
+  }
+}
+
+/** 判断攻击者是否能攻击到目标（与后端 GamePlayer.canAttack 一致） */
+function canAttackPlayer(attacker: { weapon: { type: string } | null; minusHorse?: any }, target: { plusHorse?: any }): boolean {
+  let distance = 1;
+  if (attacker.minusHorse) distance--;
+  if (target.plusHorse) distance++;
+  if (distance < 1) distance = 1;
+  return distance <= getAttackRangeByWeapon(attacker.weapon);
+}
+
 function isOffensiveCardType(type: string): boolean {
   return ['SHA', 'JUE_DOU', 'GUO_HE', 'SHUN_SHOU'].includes(type);
 }
@@ -124,6 +147,21 @@ export default function GamePage() {
         console.log(`[FE GAME_STATE] old pendingAction=${gs?.pendingAction?.actionType ?? 'null'} old actionId=${gs?.pendingAction?.actionId ?? 'null'}`);
         if (data.gameState && data.gameState.pendingAction) {
           console.log(`[FE GAME_STATE] new pendingAction=${data.gameState.pendingAction.actionType} new actionId=${data.gameState.pendingAction.actionId} targetUserId=${data.gameState.pendingAction.optionalTargetIds?.[0] ?? 'null'}`);
+          // [DEBUG JUE_DOU] 前端收到 RESPOND_SHA 时详细打印
+          const _pa = data.gameState.pendingAction;
+          if (_pa.actionType === 'RESPOND_SHA') {
+            console.log('[DEBUG JUE_DOU] RESPOND_SHA details:', JSON.stringify({
+              actionType: _pa.actionType,
+              effectType: _pa.extraData?.effectType,
+              targetUserId: _pa.optionalTargetIds?.[0],
+              currentUserId: currentUser?.userId,
+              isMyPendingAction: _pa.optionalTargetIds?.includes(currentUser?.userId ?? -1),
+              cardsCount: _pa.optionalCards?.length || 0,
+              cards: (_pa.optionalCards || []).map((c: any) => ({id: c.id, type: c.type, displayName: c.displayName, nature: c.nature})),
+              sourcePlayerId: _pa.sourcePlayerId,
+              actionId: _pa.actionId,
+            }));
+          }
         } else {
           console.log(`[FE GAME_STATE] new pendingAction=null`);
         }
@@ -388,7 +426,7 @@ export default function GamePage() {
               [调试] actionType={pendingAction.actionType} targetUserId={pendingAction.optionalTargetIds?.[0]} currentUserId={currentUser?.userId} cards={pendingAction.optionalCards?.length}
             </div>
           )}
-          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'HUO_GONG_DISCARD' && (
+          {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'HUO_GONG_DISCARD' && pendingAction.actionType !== 'HAN_BING_CHOOSE' && (
             <div className="text-pending-cards">
               {pendingAction.optionalCards.map((card) => {
                 const isDisabled = pendingAction.actionType === 'CHOOSE_WUGU_CARD' ? wuguSubmitting : responseSubmitting;
@@ -405,7 +443,7 @@ export default function GamePage() {
               })}
             </div>
           )}
-          {(!pendingAction.optionalCards || pendingAction.optionalCards.length === 0) && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && (
+          {(!pendingAction.optionalCards || pendingAction.optionalCards.length === 0) && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && pendingAction.actionType !== 'HAN_BING_CHOOSE' && (
             <div className="text-pending-hint">没有可用卡牌</div>
           )}
           {/* WAIT_EQUIP_TRIGGER: 装备触发（麒麟弓选马/青龙偃月刀选杀/贯石斧确认/寒冰剑确认） */}
@@ -474,28 +512,21 @@ export default function GamePage() {
             </>
           )}
 
-          {/* HAN_BING_CHOOSE: 寒冰剑弃牌选择 */}
+          {/* HAN_BING_CHOOSE: 寒冰剑弃牌选择（每步选1张） */}
           {pendingAction.actionType === 'HAN_BING_CHOOSE' && (
             <>
               <div className="text-pending-hint">
                 {pendingAction.message}
-                {pendingAction.discardCount > 0 && (
-                  <span>（已选 {selectedDiscardCardIds.length}/{pendingAction.discardCount} 张）</span>
+                {pendingAction.extraData?.step > 0 && (
+                  <span>（第 {pendingAction.extraData.step}/{pendingAction.extraData.maxSteps} 步）</span>
                 )}
               </div>
               <div className="text-pending-cards">
                 {pendingAction.optionalCards?.map((card) => (
                   <button
                     key={card.id}
-                    className={`text-card-btn ${card.id === '__RANDOM_HAND__' ? '' : isCardRed(card) ? 'red' : 'black'} ${selectedDiscardCardIds.includes(card.id) ? 'discard-sel' : ''}`}
-                    onClick={() => {
-                      if (responseSubmitting) return;
-                      setSelectedDiscardCardIds(prev =>
-                        prev.includes(card.id)
-                          ? prev.filter(id => id !== card.id)
-                          : (prev.length < pendingAction.discardCount ? [...prev, card.id] : prev)
-                      );
-                    }}
+                    className={`text-card-btn ${card.id === '__RANDOM_HAND__' ? '' : isCardRed(card) ? 'red' : 'black'} ${selectedCardId === card.id ? 'sel' : ''}`}
+                    onClick={() => !responseSubmitting && setSelectedCardId(selectedCardId === card.id ? null : card.id)}
                   >
                     {card.id === '__RANDOM_HAND__' ? `[随机] ${card.displayName}` : formatCard(card)}
                   </button>
@@ -503,20 +534,9 @@ export default function GamePage() {
               </div>
               <div className="text-pending-actions">
                 <button className="text-btn primary"
-                  onClick={() => {
-                    send('PENDING_RESPONSE', { gameId, cardIds: selectedDiscardCardIds, actionId: pendingAction.actionId });
-                    setSelectedDiscardCardIds([]);
-                    setResponseSubmitting(true);
-                  }}
-                  disabled={selectedDiscardCardIds.length === 0 || responseSubmitting}>
+                  onClick={() => handleConfirmPending(selectedCardId)}
+                  disabled={!selectedCardId || responseSubmitting}>
                   {responseSubmitting ? '处理中...' : '确认弃牌'}
-                </button>
-                <button className="text-btn" onClick={() => {
-                  send('PENDING_RESPONSE', { gameId, cardIds: [], actionId: pendingAction.actionId });
-                  setSelectedDiscardCardIds([]);
-                  setResponseSubmitting(true);
-                }} disabled={responseSubmitting}>
-                  放弃寒冰剑
                 </button>
               </div>
             </>
@@ -547,13 +567,18 @@ export default function GamePage() {
           {/* 通用按钮 */}
           {pendingAction.actionType !== 'WAIT_EQUIP_TRIGGER' && pendingAction.actionType !== 'WAIT_WUXIE_RESPONSE' && pendingAction.actionType !== 'DYING_REQUIRE_TAO' && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'HUO_GONG_DISCARD' && pendingAction.actionType !== 'HAN_BING_CHOOSE' && (
             <div className="text-pending-actions">
+              {pendingAction.actionType === 'RESPOND_SHAN' && pendingAction.extraData?.canUseBaGua === true && (
+                <button className="text-btn primary" onClick={() => handleConfirmPending('__BA_GUA__')} disabled={responseSubmitting}>
+                  发动八卦阵
+                </button>
+              )}
               {pendingAction.optionalCards && pendingAction.optionalCards.length > 0 && (
                 <button className="text-btn primary" onClick={() => handleConfirmPending(selectedCardId)}
                   disabled={!selectedCardId || (pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting) || responseSubmitting}>
                   {pendingAction.actionType === 'CHOOSE_WUGU_CARD' && wuguSubmitting ? '选择中...' : responseSubmitting ? '处理中...' : '确认'}
                 </button>
               )}
-              {pendingAction.actionType !== 'CHOOSE_WUGU_CARD' && pendingAction.actionType !== 'DISCARD' && (
+              {pendingAction.actionType !== 'CHOOSE_WUGU_CARD' && pendingAction.actionType !== 'DISCARD' && pendingAction.actionType !== 'CHOOSE_TARGET_CARD' && (
                 <button className="text-btn" onClick={handleSkipPending}
                   disabled={responseSubmitting}>
                   {responseSubmitting ? '处理中...' : '跳过'}
@@ -627,7 +652,7 @@ export default function GamePage() {
         {selectedCardId && isPlayPhase && isMyTurn && !gameOver && !pendingAction && (() => {
           const card = myHandCards.find(c => c.id === selectedCardId);
           const needsTarget = card && (card.category === '基本牌' ? card.type === 'SHA' :
-            card.category === '锦囊牌' ? !['WU_ZHONG', 'TAO_YUAN'].includes(card.type) : false);
+            card.category === '锦囊牌' ? !['WU_ZHONG', 'TAO_YUAN', 'WAN_JIAN', 'NAN_MAN', 'WU_GU'].includes(card.type) : false);
           const isOffensive = card && isOffensiveCardType(card.type);
           const isTieSuo = card?.type === 'TIE_SUO';
           if (isTieSuo) {
@@ -681,7 +706,15 @@ export default function GamePage() {
                     ? '选择杀的目标（在借刀目标攻击范围内）：'
                     : '已选择两个目标'}
                 </span>
-                {gs.players.filter((p) => p.alive && (selectedTargetIds.length > 0 ? p.userId !== currentUser?.userId : true)).map((p) => {
+                {gs.players.filter((p) => {
+                  if (!p.alive) return false;
+                  if (selectedTargetIds.length === 0) return true;
+                  // 选第2目标（杀的目标）：排除使用者A，且必须在借刀目标B的攻击范围内
+                  if (p.userId === currentUser?.userId) return false;
+                  const jieDaoTarget = gs.players.find(p2 => p2.userId === selectedTargetIds[0]);
+                  if (jieDaoTarget && !canAttackPlayer(jieDaoTarget, p)) return false;
+                  return true;
+                }).map((p) => {
                   const idx = selectedTargetIds.indexOf(p.userId);
                   const isSelected = idx >= 0;
                   // 已经选了借刀目标后，不能再选自己作为杀目标

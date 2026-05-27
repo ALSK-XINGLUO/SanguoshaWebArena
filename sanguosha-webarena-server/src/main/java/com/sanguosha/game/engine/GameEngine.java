@@ -629,6 +629,8 @@ public class GameEngine {
         shaExtra.put("isBlack", shaIsBlack);
         shaExtra.put("hasQingGang", hasQingGang);
         shaExtra.put("shaResolveId", UUID.randomUUID().toString());
+        boolean _hasBagua = target.getArmor() != null && target.getArmor().getCardType() == CardType.BA_GUA && !hasQingGang;
+        shaExtra.put("canUseBaGua", _hasBagua);
         action.setExtraData(shaExtra);
 
         state.setPendingAction(action);
@@ -857,9 +859,17 @@ public class GameEngine {
         state.discardCard(card);
 
         List<String> shaCards = target.getHandCards().stream()
-                .filter(c -> c.getCardType() == CardType.SHA)
+                .filter(c -> isShaLike(c))
                 .map(GameCard::getId)
                 .toList();
+
+        // [DEBUG JUE_DOU] 打出决斗时的日志
+        log.info("[JUE_DOU] useJueDou: attacker={} target={} targetHandSize={} targetShaCount={} shaCardIds={}",
+                player.getUserId(), target.getUserId(), target.getHandCards().size(), shaCards.size(), shaCards);
+        for (GameCard _c : target.getHandCards()) {
+            log.info("[JUE_DOU] target hand card: id={} type={} nature={} displayName={} isShaLike={}",
+                    _c.getId(), _c.getCardType(), _c.getNature(), _c.getDisplayName(), isShaLike(_c));
+        }
 
         GameAction action = new GameAction();
         action.setActionType("RESPOND_SHA");
@@ -873,6 +883,8 @@ public class GameEngine {
 
         state.setPendingAction(action);
         state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了决斗");
+        log.info("[JUE_DOU] created RESPOND_SHA: actionId={} targetUserId={} sourcePlayerId={} effectType=JUE_DOU optionalCardIds={}",
+                action.getActionId(), target.getUserId(), player.getUserId(), shaCards);
         return success("决斗已使用", action);
     }
 
@@ -894,7 +906,7 @@ public class GameEngine {
         }
 
         List<String> shaCards = target.getHandCards().stream()
-                .filter(c -> c.getCardType() == CardType.SHA)
+                .filter(c -> isShaLike(c))
                 .map(GameCard::getId)
                 .toList();
 
@@ -937,7 +949,13 @@ public class GameEngine {
         action.setOptionalCards(cardIdsToClientMap(state, shanCards));
         action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
         action.setMessage("请出闪响应万箭齐发");
-        action.setExtraData(Map.of("effectType", "WAN_JIAN", "damage", 1));
+
+        boolean _hasBagua = target.getArmor() != null && target.getArmor().getCardType() == CardType.BA_GUA;
+        Map<String, Object> wanJianExtra = new HashMap<>();
+        wanJianExtra.put("effectType", "WAN_JIAN");
+        wanJianExtra.put("damage", 1);
+        wanJianExtra.put("canUseBaGua", _hasBagua);
+        action.setExtraData(wanJianExtra);
 
         state.setPendingAction(action);
         state.addLog(player.getUsername() + " 使用了万箭齐发");
@@ -1053,7 +1071,7 @@ public class GameEngine {
 
             // 创建 RESPOND_SHA：要求借刀目标对杀目标出一张杀
             List<String> shaCardsList = jdTarget.getHandCards().stream()
-                    .filter(c -> c.getCardType() == CardType.SHA)
+                    .filter(c -> isShaLike(c))
                     .map(GameCard::getId)
                     .toList();
 
@@ -1345,21 +1363,42 @@ public class GameEngine {
                     int lightningFinal = calculateFinalDamage(state, player, 3, "THUNDER");
                     player.takeDamage(lightningFinal);
                     state.addLog("⚡闪电判定生效！" + player.getUsername() + "受到" + lightningFinal + "点雷电伤害");
+                    // 濒死优先于铁索传导！先检查主目标濒死
+                    ActionResult dyingResult = checkDying(state, player);
+                    if (dyingResult != null) {
+                        GamePlayer lo = player.getOpponent(state.getPlayers());
+                        boolean hasChain = lo != null && lo.isChained();
+                        if (hasChain) {
+                            List<Long> chainTargets = new ArrayList<>();
+                            chainTargets.add(lo.getUserId());
+                            Map<String, Object> cont = new HashMap<>();
+                            cont.put("remainingChainTargets", chainTargets);
+                            cont.put("baseDamage", 3);
+                            cont.put("nature", "THUNDER");
+                            cont.put("triggerTargetId", player.getUserId());
+                            cont.put("attackerId", null);
+                            ((Map<String, Object>) dyingResult.pendingAction().getExtraData()).put("chainContinuation", cont);
+                            state.addLog("主目标濒死（闪电），铁索传导将在救援后继续");
+                        }
+                        return;
+                    }
+                    // 主目标不濒死，再处理铁索传导（逐目标检查濒死）
+                    GamePlayer lo = player.getOpponent(state.getPlayers());
+                    if (lo != null && lo.isChained()) {
+                        lo.setChained(false);
+                        state.addLog(lo.getUsername() + " 解除横置状态，触发连环");
+                        List<Long> chainTargetIds = new ArrayList<>();
+                        chainTargetIds.add(lo.getUserId());
+                        if (!chainTargetIds.isEmpty()) {
+                            ActionResult chainResult = processChainStep(state, null, player, 3, "THUNDER", chainTargetIds);
+                            if (chainResult != null) return;
+                        }
+                    }
+                    state.checkGameOver();
+                    if (state.isFinished()) return;
+                    // 游戏未结束时触发伤害事件
                     fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, null, player, null, lightningFinal,
                             Map.of("effectType", "SHAN_DIAN")));
-                    // 铁索连环传导（雷电伤害，使用原始伤害3，传导目标独立判定防具）
-                    GamePlayer lightningOpponent = player.getOpponent(state.getPlayers());
-                    boolean lightningOpponentWasChained = lightningOpponent != null && lightningOpponent.isChained();
-                    propagateChainDamage(state, null, player, 3, "THUNDER");
-                    // 统一濒死检查
-                    List<GamePlayer> lightningDying = new ArrayList<>();
-                    lightningDying.add(player);
-                    if (lightningOpponentWasChained && lightningOpponent != null) {
-                        lightningDying.add(lightningOpponent);
-                    }
-                    ActionResult ld = checkDyingForAll(state, lightningDying);
-                    if (ld != null) return;
-                    state.checkGameOver();
                 } else {
                     state.addLog("闪电判定不生效，留在判定区");
                     state.discardCard(judgeCard);
@@ -1763,8 +1802,8 @@ public class GameEngine {
                 ? ((Number) extra.get("sourcePlayerId")).longValue() : null;
         CardType trickCardType = CardType.valueOf((String) extra.get("trickCardType"));
 
-        // 跳过一次校验：如果已响应过则拒绝
-        if (respondedSkipIds.contains(userId) || wuxieStack.contains(String.valueOf(userId))) {
+        // 校验：已在当前轮跳过的玩家不可再次响应（但之前使用过无懈的玩家可在新轮再次响应）
+        if (respondedSkipIds.contains(userId)) {
             return failure("你已做出响应");
         }
 
@@ -1788,10 +1827,9 @@ public class GameEngine {
             wuxieStack.add(String.valueOf(userId));
             state.addLog(currentPlayer.getUsername() + " 使用了无懈可击");
 
-            // 无懈已使用，进入反无懈轮：排除刚刚使用无懈的玩家，重新构建队列
+            // 无懈已使用，进入反无懈轮：重新构建完整队列（包含刚刚使用无懈的玩家，可在新轮再次响应）
             List<Long> nextRoundQueue = state.getAlivePlayers().stream()
                     .map(GamePlayer::getUserId)
-                    .filter(id -> !id.equals(userId))
                     .collect(java.util.stream.Collectors.toList());
             extra.put("responderQueue", nextRoundQueue);
             extra.put("currentResponderIndex", 0);
@@ -1931,7 +1969,7 @@ public class GameEngine {
                 }
 
                 List<String> shaCards = currentTarget.getHandCards().stream()
-                        .filter(c -> c.getCardType() == CardType.SHA)
+                        .filter(c -> isShaLike(c))
                         .map(GameCard::getId)
                         .toList();
 
@@ -1985,6 +2023,8 @@ public class GameEngine {
                 Map<String, Object> wanJianExtra = new HashMap<>();
                 wanJianExtra.put("effectType", "WAN_JIAN");
                 wanJianExtra.put("damage", 1);
+                boolean _hasBagua = currentTarget.getArmor() != null && currentTarget.getArmor().getCardType() == CardType.BA_GUA;
+                wanJianExtra.put("canUseBaGua", _hasBagua);
                 Map<String, Object> aoeCtx = new HashMap<>();
                 aoeCtx.put("pendingTargetUserIds", new ArrayList<>(pendingTargets));
                 aoeCtx.put("currentTargetIndex", currentIndex);
@@ -2152,6 +2192,25 @@ public class GameEngine {
                 return success("五谷丰登结束");
             }
 
+            // 每个目标选牌前先检查无懈可击（包括第一个目标）
+            if (hasAnyWuxie(state)) {
+                // 重新进入无懈链：将剩余待选玩家设为 pendingTargets
+                extra.put("pendingTargetUserIds", filteredOrder.stream().map(String::valueOf).toList());
+                extra.put("currentTargetIndex", 0);
+                extra.put("wuxieStack", new ArrayList<String>());
+                extra.put("respondedSkipIds", new ArrayList<Long>());
+                extra.put("processedTargetUserIds", new ArrayList<String>());
+                extra.put("wuguCurrentCardIds", cardIds);
+                extra.put("wuguCurrentCardInfos", cardInfos);
+                List<Long> respQueue = state.getAlivePlayers().stream()
+                        .map(GamePlayer::getUserId).toList();
+                extra.put("responderQueue", respQueue);
+                extra.put("currentResponderIndex", 0);
+                return advanceToNextWuxieResponder(state, extra,
+                        extra.get("sourcePlayerId") instanceof Number
+                                ? ((Number) extra.get("sourcePlayerId")).longValue() : null);
+            }
+
             GameAction action = new GameAction();
             action.setActionType("CHOOSE_WUGU_CARD");
             action.setSourcePlayerId(extra.get("sourcePlayerId") instanceof Number
@@ -2226,7 +2285,7 @@ public class GameEngine {
             case "HUO_GONG_DISCARD" -> handleHuoGongDiscard(state, userId, cardId, pending);
             case "WAIT_EQUIP_TRIGGER" -> handleEquipTrigger(state, userId, cardId, pending);
             case "WAIT_WUXIE_RESPONSE" -> handleWuxieResponse(state, userId, cardId, pending);
-            case "HAN_BING_CHOOSE" -> handleHanBingChoose(state, userId, cardIds, pending);
+            case "HAN_BING_CHOOSE" -> handleHanBingChoose(state, userId, cardId, pending);
             default -> failure("未知响应类型");
         };
 
@@ -2274,29 +2333,44 @@ public class GameEngine {
 
         // === 万箭齐发：单独的 RESPOND_SHAN 分支，不走杀逻辑 ===
         if ("WAN_JIAN".equals(effectType)) {
+            // 八卦阵：发动八卦阵判定
+            if ("__BA_GUA__".equals(cardId)) {
+                GameCard judgeCard = state.drawCard();
+                if (judgeCard == null) return failure("牌堆已空");
+                state.discardCard(judgeCard);
+                state.addLog("八卦阵判定牌：" + judgeCard.getSuit().getSymbol() + judgeCard.getNumberDisplay() + " " + judgeCard.getDisplayName());
+                if (judgeCard.isRed()) {
+                    state.addLog(responder.getUsername() + " 的八卦阵判定成功，视为出闪");
+                    state.setPendingAction(null);
+                    return success("八卦阵判定成功");
+                } else {
+                    state.addLog(responder.getUsername() + " 的八卦阵判定失败，仍需出闪");
+                    List<String> shanCards = responder.getHandCards().stream()
+                            .filter(c -> c.getCardType() == CardType.SHAN)
+                            .map(GameCard::getId).toList();
+                    GameAction newAction = new GameAction();
+                    newAction.setActionType("RESPOND_SHAN");
+                    newAction.setSourceCardId(pending.getSourceCardId());
+                    newAction.setSourcePlayerId(pending.getSourcePlayerId());
+                    newAction.setOptionalCardIds(shanCards);
+                    newAction.setOptionalCards(cardIdsToClientMap(state, shanCards));
+                    newAction.setOptionalTargetIds(Collections.singletonList(responder.getUserId()));
+                    newAction.setMessage("请出闪响应万箭齐发");
+                    Map<String, Object> newExtra = new HashMap<>();
+                    newExtra.put("effectType", "WAN_JIAN");
+                    newExtra.put("damage", baseDamage);
+                    newAction.setExtraData(newExtra);
+                    state.setPendingAction(newAction);
+                    return success("八卦阵判定失败，请出闪", newAction);
+                }
+            }
             if (cardId != null) {
                 GameCard shanCard = findCard(responder, cardId);
                 if (shanCard == null || shanCard.getCardType() != CardType.SHAN) {
                     return failure("无效的闪");
                 }
-                boolean needShan = true;
-                if (responder.getArmor() != null && responder.getArmor().getCardType() == CardType.BA_GUA) {
-                    GameCard judgeCard = state.drawCard();
-                    if (judgeCard != null) {
-                        state.discardCard(judgeCard);
-                        state.addLog("判定牌：" + judgeCard.getSuit().getSymbol() + judgeCard.getNumberDisplay() + " " + judgeCard.getDisplayName() + "（八卦阵）");
-                        if (judgeCard.isRed()) {
-                            needShan = false;
-                            state.addLog(responder.getUsername() + " 的八卦阵判定成功，视为出闪");
-                        } else {
-                            state.addLog(responder.getUsername() + " 的八卦阵判定失败");
-                        }
-                    }
-                }
-                if (needShan) {
-                    responder.removeHandCard(cardId);
-                    state.discardCard(shanCard);
-                }
+                responder.removeHandCard(cardId);
+                state.discardCard(shanCard);
                 state.addLog(responder.getUsername() + " 打出闪，响应万箭齐发");
                 state.setPendingAction(null);
                 return success("出闪成功");
@@ -2331,36 +2405,51 @@ public class GameEngine {
         }
 
         // ========== 杀逻辑（effectType == null / "SHA"）==========
-        if (cardId != null) {
+        boolean shanResolved = false;
+
+        // 八卦阵：发动八卦阵判定
+        if ("__BA_GUA__".equals(cardId)) {
+            GameCard judgeCard = state.drawCard();
+            if (judgeCard == null) return failure("牌堆已空");
+            state.discardCard(judgeCard);
+            state.addLog("八卦阵判定牌：" + judgeCard.getSuit().getSymbol() + judgeCard.getNumberDisplay() + " " + judgeCard.getDisplayName());
+            if (judgeCard.isRed()) {
+                shanResolved = true;
+                state.addLog(responder.getUsername() + " 的八卦阵判定成功，视为出闪");
+            } else {
+                state.addLog(responder.getUsername() + " 的八卦阵判定失败，仍需出闪");
+                List<String> shanCards = responder.getHandCards().stream()
+                        .filter(c -> c.getCardType() == CardType.SHAN)
+                        .map(GameCard::getId).toList();
+                GameAction newAction = new GameAction();
+                newAction.setActionType("RESPOND_SHAN");
+                newAction.setSourceCardId(pending.getSourceCardId());
+                newAction.setSourcePlayerId(pending.getSourcePlayerId());
+                newAction.setOptionalCardIds(shanCards);
+                newAction.setOptionalCards(cardIdsToClientMap(state, shanCards));
+                newAction.setOptionalTargetIds(Collections.singletonList(responder.getUserId()));
+                newAction.setMessage(pending.getMessage());
+                Map<String, Object> newExtra = new HashMap<>();
+                if (extra != null) newExtra.putAll(extra);
+                newExtra.remove("canUseBaGua");
+                newAction.setExtraData(newExtra);
+                state.setPendingAction(newAction);
+                return success("八卦阵判定失败，请出闪", newAction);
+            }
+        } else if (cardId != null) {
             // 出了闪
             GameCard shanCard = findCard(responder, cardId);
             if (shanCard == null || shanCard.getCardType() != CardType.SHAN) {
                 return failure("无效的闪");
             }
-
-            // 八卦阵判定
-            boolean needShan = true;
-            if (responder.getArmor() != null && responder.getArmor().getCardType() == CardType.BA_GUA) {
-                GameCard judgeCard = state.drawCard();
-                if (judgeCard != null) {
-                    state.discardCard(judgeCard);
-                    state.addLog("判定牌：" + judgeCard.getSuit().getSymbol() + judgeCard.getNumberDisplay() + " " + judgeCard.getDisplayName() + "（八卦阵）");
-                    if (judgeCard.isRed()) {
-                        needShan = false;
-                        state.addLog(responder.getUsername() + " 的八卦阵判定成功，视为出闪");
-                    } else {
-                        state.addLog(responder.getUsername() + " 的八卦阵判定失败");
-                    }
-                }
-            }
-
-            if (needShan) {
-                responder.removeHandCard(cardId);
-                state.discardCard(shanCard);
-            }
+            shanResolved = true;
+            responder.removeHandCard(cardId);
+            state.discardCard(shanCard);
+        }
 
             // 武器效果：贯石斧 / 青龙偃月刀（仅非AOE时生效）
-            if (!"NAN_MAN".equals(effectType) && !"WAN_JIAN".equals(effectType)) {
+            if (shanResolved) {
+                if (!"NAN_MAN".equals(effectType) && !"WAN_JIAN".equals(effectType)) {
                 if (attacker != null && attacker.getWeapon() != null) {
                     CardType weaponType = attacker.getWeapon().getCardType();
 
@@ -2388,7 +2477,7 @@ public class GameEngine {
                     // 青龙偃月刀：杀被闪抵消后可追刀
                     if (weaponType == CardType.QING_LONG) {
                         List<String> shaCards = attacker.getHandCards().stream()
-                                .filter(c -> c.getCardType() == CardType.SHA)
+                                .filter(c -> isShaLike(c))
                                 .map(GameCard::getId).toList();
                         if (!shaCards.isEmpty()) {
                             List<Map<String, Object>> shaInfos = cardIdsToClientMap(state, shaCards);
@@ -2406,12 +2495,15 @@ public class GameEngine {
                         }
                     }
                 }
+            }   // closes if (!"NAN_MAN"...)
+            }   // closes if (shanResolved)
+
+            if (shanResolved) {
+                state.addLog(responder.getUsername() + " 出闪成功");
+                state.setPendingAction(null);
+                return success("出闪成功");
             }
 
-            state.addLog(responder.getUsername() + " 出闪成功");
-            state.setPendingAction(null);
-            return success("出闪成功");
-        } else {
             // 没有出闪 - 命中
             int damage = baseDamage;
             if (hasJiuEffect) {
@@ -2501,23 +2593,46 @@ public class GameEngine {
                     (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
             state.addLog(attacker.getUsername() + " 的杀命中" +
                     (rawShaResolveId != null ? " [sha:" + rawShaResolveId + "]" : ""));
-            int shaChainDamage = chainBaseDamage;
+            // 濒死优先于铁索传导！先检查主目标濒死
+            ActionResult priDying = checkDying(state, responder);
+            if (priDying != null) {
+                // 主目标濒死：保存铁索传导上下文，救援后继续
+                boolean hasChain = ("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && responder.isChained();
+                if (hasChain) {
+                    List<Long> chainTargets = new ArrayList<>();
+                    for (GamePlayer p : state.getAlivePlayers()) {
+                        if (p.getUserId().equals(responder.getUserId())) continue;
+                        if (!p.isChained()) continue;
+                        chainTargets.add(p.getUserId());
+                    }
+                    Map<String, Object> cont = new HashMap<>();
+                    cont.put("remainingChainTargets", chainTargets);
+                    cont.put("baseDamage", chainBaseDamage);
+                    cont.put("nature", natureStr);
+                    cont.put("triggerTargetId", responder.getUserId());
+                    cont.put("attackerId", attacker != null ? attacker.getUserId() : null);
+                    ((Map<String, Object>) priDying.pendingAction().getExtraData()).put("chainContinuation", cont);
+                    state.addLog("主目标濒死，铁索传导将在救援后继续");
+                }
+                return priDying;
+            }
 
-            // 铁索连环传导（使用含藤甲的实际伤害值）
-            // 注意：propagateChainDamage 不再检查濒死，由下方统一处理
-            boolean attackerWasChained = attacker != null && attacker.isChained();
+            // 主目标不濒死，再处理铁索传导（逐目标检查濒死）
             if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && responder.isChained()) {
-                propagateChainDamage(state, attacker, responder, shaChainDamage, natureStr);
-            }
+                responder.setChained(false); // 解除主目标横置
+                state.addLog(responder.getUsername() + " 解除横置状态，触发连环");
 
-            // 统一濒死检查：原始目标优先，铁索传导目标（场上唯一其他存活玩家）次之
-            List<GamePlayer> dyingCandidates = new ArrayList<>();
-            dyingCandidates.add(responder);
-            if (attackerWasChained && attacker != null && !attacker.getUserId().equals(responder.getUserId())) {
-                dyingCandidates.add(attacker);
+                List<Long> chainTargetIds = new ArrayList<>();
+                for (GamePlayer p : state.getAlivePlayers()) {
+                    if (p.getUserId().equals(responder.getUserId())) continue;
+                    if (!p.isChained()) continue;
+                    chainTargetIds.add(p.getUserId());
+                }
+                if (!chainTargetIds.isEmpty()) {
+                    ActionResult chainResult = processChainStep(state, attacker, responder, chainBaseDamage, natureStr, chainTargetIds);
+                    if (chainResult != null) return chainResult;
+                }
             }
-            ActionResult dying = checkDyingForAll(state, dyingCandidates);
-            if (dying != null) return dying;
 
             state.checkGameOver();
             if (state.isFinished()) return success("连环传导导致游戏结束");
@@ -2537,7 +2652,6 @@ public class GameEngine {
             state.setPendingAction(null);
 
             return success("命中，" + damage + "点伤害");
-        }
     }
 
     /**
@@ -2554,9 +2668,25 @@ public class GameEngine {
         if (cardId != null) {
             // 出杀
             GameCard shaCard = findCard(responder, cardId);
-            if (shaCard == null || shaCard.getCardType() != CardType.SHA) {
+            if (shaCard == null || !isShaLike(shaCard)) {
                 return failure("无效的杀");
             }
+
+            // 借刀杀人：B出杀后作为普通杀结算（B攻击C），真正造成伤害
+            if ("JIE_DAO".equals(effectType)) {
+                String shaTargetUserId = extra != null ? (String) extra.get("shaTargetId") : null;
+                GamePlayer shaTarget = shaTargetUserId != null ? findPlayerById(state, Long.valueOf(shaTargetUserId)) : null;
+                if (shaTarget == null || !shaTarget.isAlive()) {
+                    return failure("杀的目标已不存在");
+                }
+                responder.removeHandCard(cardId);
+                state.discardCard(shaCard);
+                boolean shaIsBlack = shaCard.isBlack();
+                state.addLog(responder.getUsername() + " 出杀响应借刀杀人，攻击 " + shaTarget.getUsername());
+                return createShaRespondAction(state, responder, shaCard.getId(), shaIsBlack,
+                        shaTarget, shaTargetUserId, GameCard.Nature.NORMAL, false, false, false);
+            }
+
             responder.removeHandCard(cardId);
             state.discardCard(shaCard);
             return onShaPlayed(state, responder, pending, responder.getUsername() + " 出杀响应");
@@ -2564,9 +2694,10 @@ public class GameEngine {
             // 没有出杀
             if ("JUE_DOU".equals(effectType)) {
                 GamePlayer initiator = findPlayerById(state, pending.getSourcePlayerId());
-                responder.takeDamage(1);
-                state.addLog(responder.getUsername() + " 决斗失败，受到1点伤害");
-                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, initiator, responder, null, 1,
+                int duelFinal = calculateFinalDamage(state, responder, 1, "NORMAL");
+                responder.takeDamage(duelFinal);
+                state.addLog(responder.getUsername() + " 决斗失败，受到" + duelFinal + "点伤害");
+                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, initiator, responder, null, duelFinal,
                         Map.of("effectType", "JUE_DOU")));
                 // 濒死检查
                 ActionResult dying = checkDying(state, responder);
@@ -2576,9 +2707,10 @@ public class GameEngine {
                 return success("决斗结束，有人受伤");
             } else if ("NAN_MAN".equals(effectType)) {
                 GamePlayer initiator = findPlayerById(state, pending.getSourcePlayerId());
-                responder.takeDamage(1);
-                state.addLog(responder.getUsername() + " 未出杀，受到南蛮入侵伤害");
-                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, initiator, responder, null, 1,
+                int nanManFinal = calculateFinalDamage(state, responder, 1, "NORMAL");
+                responder.takeDamage(nanManFinal);
+                state.addLog(responder.getUsername() + " 未出杀，受到南蛮入侵" + nanManFinal + "点伤害");
+                fireEvent(new GameEvent(GameEventType.DAMAGE_DONE, state, initiator, responder, null, nanManFinal,
                         Map.of("effectType", "NAN_MAN")));
                 ActionResult dying = checkDying(state, responder);
                 if (dying != null) return dying;
@@ -2625,15 +2757,25 @@ public class GameEngine {
             if (initiator == null) return failure("未找到发起者");
 
             List<String> shaCards = initiator.getHandCards().stream()
-                    .filter(c -> c.getCardType() == CardType.SHA)
+                    .filter(c -> isShaLike(c))
                     .map(GameCard::getId)
                     .toList();
+
+            // [DEBUG JUE_DOU] 打印决斗轮换日志
+            log.info("[JUE_DOU] rotation: responder={} initiator={} initiatorHandSize={} initiatorShaCount={} shaCardIds={} actionId={}",
+                    responder.getUserId(), initiator.getUserId(),
+                    initiator.getHandCards().size(), shaCards.size(), shaCards, pending.getActionId());
+            for (GameCard _c : initiator.getHandCards()) {
+                log.info("[JUE_DOU] initiator hand card: id={} type={} nature={} displayName={} isShaLike={}",
+                        _c.getId(), _c.getCardType(), _c.getNature(), _c.getDisplayName(), isShaLike(_c));
+            }
 
             GameAction newAction = new GameAction();
             newAction.setActionType("RESPOND_SHA");
             newAction.setSourceCardId(pending.getSourceCardId());
             newAction.setSourcePlayerId(responder.getUserId());
             newAction.setOptionalCardIds(shaCards);
+            newAction.setOptionalCards(cardIdsToClientMap(state, shaCards));
             newAction.setOptionalTargetIds(Collections.singletonList(initiator.getUserId()));
             newAction.setMessage("请出杀响应决斗");
             newAction.setExtraData(Map.of("effectType", "JUE_DOU", "initiatorId", initiator.getUserId()));
@@ -2775,21 +2917,44 @@ public class GameEngine {
         target.takeDamage(guanFinal);
         state.addLog(target.getUsername() + " 受到" + guanFinal + "点伤害（贯石斧）");
 
-        // 铁索连环传导（使用含藤甲的实际伤害值）
-        // propagateChainDamage 不再检查濒死，由下方统一处理
-        boolean guanAttackerWasChained = attacker != null && attacker.isChained();
-        if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained()) {
-            propagateChainDamage(state, attacker, target, guanChainDamage, natureStr);
+        // 濒死优先于铁索传导！先检查贯石斧主目标濒死
+        ActionResult guanPriDying = checkDying(state, target);
+        if (guanPriDying != null) {
+            boolean hasChain = ("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained();
+            if (hasChain) {
+                List<Long> chainTargets = new ArrayList<>();
+                for (GamePlayer p : state.getAlivePlayers()) {
+                    if (p.getUserId().equals(target.getUserId())) continue;
+                    if (!p.isChained()) continue;
+                    chainTargets.add(p.getUserId());
+                }
+                Map<String, Object> cont = new HashMap<>();
+                cont.put("remainingChainTargets", chainTargets);
+                cont.put("baseDamage", guanChainDamage);
+                cont.put("nature", natureStr);
+                cont.put("triggerTargetId", target.getUserId());
+                cont.put("attackerId", attacker != null ? attacker.getUserId() : null);
+                ((Map<String, Object>) guanPriDying.pendingAction().getExtraData()).put("chainContinuation", cont);
+                state.addLog("主目标濒死（贯石斧），铁索传导将在救援后继续");
+            }
+            return guanPriDying;
         }
 
-        // 统一濒死检查：原始目标优先，铁索传导目标次之
-        List<GamePlayer> guanDyingCandidates = new ArrayList<>();
-        guanDyingCandidates.add(target);
-        if (guanAttackerWasChained && attacker != null && !attacker.getUserId().equals(target.getUserId())) {
-            guanDyingCandidates.add(attacker);
+        // 主目标不濒死，再处理铁索传导（逐目标检查濒死）
+        if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained()) {
+            target.setChained(false);
+            state.addLog(target.getUsername() + " 解除横置状态，触发连环");
+            List<Long> chainTargetIds = new ArrayList<>();
+            for (GamePlayer p : state.getAlivePlayers()) {
+                if (p.getUserId().equals(target.getUserId())) continue;
+                if (!p.isChained()) continue;
+                chainTargetIds.add(p.getUserId());
+            }
+            if (!chainTargetIds.isEmpty()) {
+                ActionResult chainResult = processChainStep(state, attacker, target, guanChainDamage, natureStr, chainTargetIds);
+                if (chainResult != null) return chainResult;
+            }
         }
-        ActionResult guanDying = checkDyingForAll(state, guanDyingCandidates);
-        if (guanDying != null) return guanDying;
 
         state.checkGameOver();
         if (state.isFinished()) return success("连环传导导致游戏结束");
@@ -2819,7 +2984,7 @@ public class GameEngine {
         if (attacker == null) return failure("未找到玩家");
 
         GameCard shaCard = findCard(attacker, cardId);
-        if (shaCard == null || shaCard.getCardType() != CardType.SHA) {
+        if (shaCard == null || !isShaLike(shaCard)) {
             return failure("请选择一张杀");
         }
 
@@ -2841,9 +3006,14 @@ public class GameEngine {
         action.setOptionalCards(cardIdsToClientMap(state, shanCards));
         action.setOptionalTargetIds(Collections.singletonList(target.getUserId()));
         action.setMessage(target.getUsername() + " 请出闪（青龙偃月刀追刀）");
-        action.setExtraData(Map.of("hasJiuEffect", false, "damage", 1,
-                "nature", shaCard.getNature().name(),
-                "shaResolveId", UUID.randomUUID().toString()));
+        Map<String, Object> qlExtra = new HashMap<>();
+        qlExtra.put("hasJiuEffect", false);
+        qlExtra.put("damage", 1);
+        qlExtra.put("nature", shaCard.getNature().name());
+        qlExtra.put("shaResolveId", UUID.randomUUID().toString());
+        boolean _hasBagua = target.getArmor() != null && target.getArmor().getCardType() == CardType.BA_GUA;
+        qlExtra.put("canUseBaGua", _hasBagua);
+        action.setExtraData(qlExtra);
 
         state.setPendingAction(action);
         state.addLog(attacker.getUsername() + " 发动青龙偃月刀追刀");
@@ -2854,13 +3024,15 @@ public class GameEngine {
      * 寒冰剑：弃两张牌代替伤害
      */
     private ActionResult handleHanBing(GameState state, Long userId, String cardId, GameAction pending) {
+        GamePlayer attacker = findPlayerById(state, userId);
+        if (attacker == null) return failure("未找到玩家");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> extra = (Map<String, Object>) pending.getExtraData();
+        GamePlayer target = findPlayerById(state, Long.valueOf(extra.get("targetId").toString()));
+        if (target == null) return failure("未找到目标");
+
         if (cardId == null) {
             // 不发动寒冰剑，正常造成伤害
-            GamePlayer attacker = findPlayerById(state, userId);
-            @SuppressWarnings("unchecked")
-            Map<String, Object> extra = (Map<String, Object>) pending.getExtraData();
-            GamePlayer target = findPlayerById(state, Long.valueOf(extra.get("targetId").toString()));
-            if (target == null) return failure("未找到目标");
 
             int baseDmg = extra.get("damage") instanceof Integer ? (int) extra.get("damage") : 1;
             boolean hasJiu = Boolean.TRUE.equals(extra.get("hasJiuEffect"));
@@ -2887,7 +3059,7 @@ public class GameEngine {
                     state.setPendingAction(null);
                     return success("杀被仁王盾抵挡");
                 }
-                if (armorType == CardType.TENG_JIA && effectTypeStr == null) {
+                if (armorType == CardType.TENG_JIA && effectTypeStr == null && "NORMAL".equals(natureStr)) {
                     state.addLog(target.getUsername() + " 的藤甲使普通杀无效");
                     state.setPendingAction(null);
                     return success("杀被藤甲抵挡");
@@ -2895,10 +3067,8 @@ public class GameEngine {
             }
             // 计算铁索传导基础伤害（含藤甲+1）
             int hbChainBase = damage + (target.getArmor() != null && target.getArmor().getCardType() == CardType.TENG_JIA && "FIRE".equals(natureStr) ? 1 : 0);
-            // 使用统一入口计算最终伤害（先藤甲+1，再白银狮子减至1）
             int hbFinal = calculateFinalDamage(state, target, damage, natureStr);
 
-            // 防重复伤害机制
             Object rawShaResolveId = extra.get("shaResolveId");
             if (rawShaResolveId != null) {
                 String damageKey = rawShaResolveId + ":" + target.getUserId();
@@ -2911,24 +3081,46 @@ public class GameEngine {
             }
 
             target.takeDamage(hbFinal);
-            state.addLog(target.getUsername() + " 受到" + hbFinal + "点伤害");
-            int hanbingChainDamage = hbChainBase;
+            state.addLog(target.getUsername() + " 受到" + hbFinal + "点伤害（寒冰剑弃牌代伤后结算）");
 
-            // 铁索连环传导（使用含藤甲的实际伤害值）
-            // propagateChainDamage 不再检查濒死，由下方统一处理
-            boolean hanbingAttackerWasChained = attacker != null && attacker.isChained();
+            // 濒死优先于铁索传导！先检查主目标濒死
+            ActionResult hbPriDying = checkDying(state, target);
+            if (hbPriDying != null) {
+                boolean hasChain = ("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained();
+                if (hasChain) {
+                    List<Long> chainTargets = new ArrayList<>();
+                    for (GamePlayer p : state.getAlivePlayers()) {
+                        if (p.getUserId().equals(target.getUserId())) continue;
+                        if (!p.isChained()) continue;
+                        chainTargets.add(p.getUserId());
+                    }
+                    Map<String, Object> cont = new HashMap<>();
+                    cont.put("remainingChainTargets", chainTargets);
+                    cont.put("baseDamage", hbChainBase);
+                    cont.put("nature", natureStr);
+                    cont.put("triggerTargetId", target.getUserId());
+                    cont.put("attackerId", attacker != null ? attacker.getUserId() : null);
+                    ((Map<String, Object>) hbPriDying.pendingAction().getExtraData()).put("chainContinuation", cont);
+                    state.addLog("主目标濒死（寒冰剑），铁索传导将在救援后继续");
+                }
+                return hbPriDying;
+            }
+
             if (("FIRE".equals(natureStr) || "THUNDER".equals(natureStr)) && target.isChained()) {
-                propagateChainDamage(state, attacker, target, hanbingChainDamage, natureStr);
+                target.setChained(false);
+                state.addLog(target.getUsername() + " 解除横置状态，触发连环");
+                List<Long> chainTargetIds = new ArrayList<>();
+                for (GamePlayer p : state.getAlivePlayers()) {
+                    if (p.getUserId().equals(target.getUserId())) continue;
+                    if (!p.isChained()) continue;
+                    chainTargetIds.add(p.getUserId());
+                }
+                if (!chainTargetIds.isEmpty()) {
+                    ActionResult chainResult = processChainStep(state, attacker, target, hbChainBase, natureStr, chainTargetIds);
+                    if (chainResult != null) return chainResult;
+                }
             }
 
-            // 统一濒死检查：原始目标优先，铁索传导目标次之
-            List<GamePlayer> hbDyingCandidates = new ArrayList<>();
-            hbDyingCandidates.add(target);
-            if (hanbingAttackerWasChained && attacker != null && !attacker.getUserId().equals(target.getUserId())) {
-                hbDyingCandidates.add(attacker);
-            }
-            ActionResult hbDying = checkDyingForAll(state, hbDyingCandidates);
-            if (hbDying != null) return hbDying;
             state.checkGameOver();
             if (state.isFinished()) return success("连环传导导致游戏结束");
 
@@ -2941,18 +3133,88 @@ public class GameEngine {
             return success("命中，" + damage + "点伤害");
         }
 
+        int hbTotal = countDiscardableCards(target);
+        if (hbTotal <= 0) {
+            state.setPendingAction(null);
+            return success("寒冰剑：目标无可弃之牌");
+        }
+        return createHanBingChooseStep(state, attacker, target, 1, 2, 0);
+    }
+
+    /**
+     * 寒冰剑弃牌选择响应 — 每次弃 1 张，分两步完成
+     * cardId != null → 选择一张牌弃置
+     * cardId == null → 跳过/放弃（结束寒冰剑，不弃牌）
+     */
+    private ActionResult handleHanBingChoose(GameState state, Long userId, String cardId, GameAction pending) {
         GamePlayer attacker = findPlayerById(state, userId);
         if (attacker == null) return failure("未找到玩家");
-
         @SuppressWarnings("unchecked")
         Map<String, Object> extra = (Map<String, Object>) pending.getExtraData();
         Long targetId = Long.valueOf(extra.get("targetId").toString());
         GamePlayer target = findPlayerById(state, targetId);
         if (target == null) return failure("未找到目标");
 
-        // 进入选择界面：展示目标装备 + 随机手牌选项
-        int hbTotal = countDiscardableCards(target);
-        int hbMaxPick = Math.min(2, hbTotal);
+        int step = extra.containsKey("step") ? (int) extra.get("step") : 1;
+        int maxSteps = extra.containsKey("maxSteps") ? (int) extra.get("maxSteps") : 2;
+        int discardedCount = extra.containsKey("discardedCount") ? (int) extra.get("discardedCount") : 0;
+
+        if (cardId == null) {
+            state.addLog(attacker.getUsername() + " 放弃寒冰剑弃牌（已弃" + discardedCount + "张）");
+            state.setPendingAction(null);
+            return success("寒冰剑：放弃");
+        }
+
+        // 处理弃牌（单张）
+        boolean discardedOk = false;
+        if ("__RANDOM_HAND__".equals(cardId)) {
+            if (!target.getHandCards().isEmpty()) {
+                java.util.Random rand = new java.util.Random();
+                int idx = rand.nextInt(target.getHandCards().size());
+                GameCard hc = target.getHandCards().get(idx);
+                target.removeHandCard(hc.getId());
+                state.discardCard(hc);
+                state.addLog(attacker.getUsername() + " 发动寒冰剑，弃置了" + target.getUsername() + "的1张手牌");
+                discardedOk = true;
+            }
+        } else {
+            GameCard card = findCard(target, cardId);
+            if (card == null) {
+                card = target.getJudgeArea().stream().filter(c -> c.getId().equals(cardId)).findFirst().orElse(null);
+                if (card != null) {
+                    target.getJudgeArea().removeIf(c -> c.getId().equals(cardId));
+                    state.discardCard(card);
+                    discardedOk = true;
+                }
+            } else if (card.getCardType().isEquipment()) {
+                removeEquipment(target, state, card.getCardType());
+                state.discardCard(card);
+                discardedOk = true;
+            }
+        }
+
+        if (!discardedOk) {
+            return failure("无效的牌");
+        }
+
+        int newDiscarded = discardedCount + 1;
+        state.addLog(attacker.getUsername() + " 发动寒冰剑，" + target.getUsername() + " 失去1张牌（第" + step + "步）");
+
+        // 如果还需要弃第 2 张且目标仍有牌可弃，进入第 2 步
+        if (step < maxSteps && countDiscardableCards(target) >= 1) {
+            return createHanBingChooseStep(state, attacker, target, step + 1, maxSteps, newDiscarded);
+        }
+
+        state.addLog(attacker.getUsername() + " 发动寒冰剑，共弃置" + target.getUsername() + "的" + newDiscarded + "张牌");
+        state.setPendingAction(null);
+        return success("寒冰剑：弃" + newDiscarded + "张牌代替伤害");
+    }
+
+    /**
+     * 创建寒冰剑弃牌选择步骤
+     */
+    private ActionResult createHanBingChooseStep(GameState state, GamePlayer attacker, GamePlayer target,
+                                                  int step, int maxSteps, int discardedCount) {
         List<String> hbChoiceIds = new ArrayList<>();
         List<Map<String, Object>> hbChoiceCards = new ArrayList<>();
         if (target.getWeapon() != null) {
@@ -2984,81 +3246,23 @@ public class GameEngine {
             handPh.put("numberDisplay", "");
             hbChoiceCards.add(handPh);
         }
-        GameAction hbAction = new GameAction();
-        hbAction.setActionType("HAN_BING_CHOOSE");
-        hbAction.setSourcePlayerId(attacker.getUserId());
-        hbAction.setOptionalCardIds(hbChoiceIds);
-        hbAction.setOptionalCards(hbChoiceCards);
-        hbAction.setOptionalTargetIds(Collections.singletonList(attacker.getUserId()));
-        hbAction.setDiscardCount(hbMaxPick);
-        hbAction.setMessage("寒冰剑：选择要弃置的牌（最多" + hbMaxPick + "张）");
+
+        GameAction action = new GameAction();
+        action.setActionType("HAN_BING_CHOOSE");
+        action.setSourcePlayerId(attacker.getUserId());
+        action.setOptionalCardIds(hbChoiceIds);
+        action.setOptionalCards(hbChoiceCards);
+        action.setOptionalTargetIds(Collections.singletonList(attacker.getUserId()));
+        action.setMessage("寒冰剑：请选择第 " + step + " 张要弃置的牌");
         Map<String, Object> hbExtra = new HashMap<>();
         hbExtra.put("targetId", target.getUserId());
         hbExtra.put("targetName", target.getUsername());
-        hbAction.setExtraData(hbExtra);
-        state.setPendingAction(hbAction);
-        return success("寒冰剑：请选择要弃置的牌", hbAction);
-    }
-
-    /**
-     * 寒冰剑弃牌选择响应
-     */
-    private ActionResult handleHanBingChoose(GameState state, Long userId, List<String> cardIds, GameAction pending) {
-        GamePlayer attacker = findPlayerById(state, userId);
-        if (attacker == null) return failure("未找到玩家");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> extra = (Map<String, Object>) pending.getExtraData();
-        Long targetId = Long.valueOf(extra.get("targetId").toString());
-        GamePlayer target = findPlayerById(state, targetId);
-        if (target == null) return failure("未找到目标");
-
-        if (cardIds == null || cardIds.isEmpty()) {
-            state.addLog(attacker.getUsername() + " 发动寒冰剑，但选择不弃牌");
-            state.setPendingAction(null);
-            return success("寒冰剑：不弃牌");
-        }
-
-        int discarded = 0;
-        int maxDiscard = Math.min(2, countDiscardableCards(target));
-        java.util.Random rand = new java.util.Random();
-        boolean wantRandom = false;
-
-        for (String cid : cardIds) {
-            if ("__RANDOM_HAND__".equals(cid)) {
-                wantRandom = true;
-            } else {
-                GameCard equip = findCard(target, cid);
-                if (equip == null) {
-                    // 判定区牌
-                    equip = target.getJudgeArea().stream().filter(c -> c.getId().equals(cid)).findFirst().orElse(null);
-                    if (equip != null) {
-                        target.getJudgeArea().removeIf(c -> c.getId().equals(cid));
-                        state.discardCard(equip);
-                        discarded++;
-                    }
-                } else if (equip.getCardType().isEquipment()) {
-                    removeEquipment(target, state, equip.getCardType());
-                    state.discardCard(equip);
-                    discarded++;
-                }
-            }
-        }
-
-        // 随机手牌：填满剩余弃牌名额（最多到 maxDiscard 张）
-        if (wantRandom && !target.getHandCards().isEmpty()) {
-            int randomCount = Math.min(maxDiscard - discarded, target.getHandCards().size());
-            for (int i = 0; i < randomCount; i++) {
-                int idx = rand.nextInt(target.getHandCards().size());
-                GameCard hc = target.getHandCards().get(idx);
-                target.removeHandCard(hc.getId());
-                state.discardCard(hc);
-                discarded++;
-            }
-        }
-
-        state.addLog(attacker.getUsername() + " 发动寒冰剑，弃置了" + target.getUsername() + "的" + discarded + "张牌");
-        state.setPendingAction(null);
-        return success("寒冰剑：弃" + discarded + "张牌代替伤害");
+        hbExtra.put("step", step);
+        hbExtra.put("maxSteps", maxSteps);
+        hbExtra.put("discardedCount", discardedCount);
+        action.setExtraData(hbExtra);
+        state.setPendingAction(action);
+        return success("寒冰剑：第" + step + "步", action);
     }
 
     /**
@@ -3213,7 +3417,13 @@ public class GameEngine {
         if (target == null) return failure("未找到目标玩家");
 
         if ("GUO_HE".equals(effectType)) {
-            if (cardId != null && !"__RANDOM_HAND__".equals(cardId)) {
+            if (cardId == null || cardId.trim().isEmpty()) {
+                return failure("必须选择一张要弃置的牌");
+            }
+            if (!pending.getOptionalCardIds().contains(cardId)) {
+                return failure("无效的卡牌选择");
+            }
+            if (!"__RANDOM_HAND__".equals(cardId)) {
                 // 选择了指定装备/判定区牌弃置
                 GameCard discardCard = findCard(target, cardId);
                 if (discardCard == null) {
@@ -3245,7 +3455,13 @@ public class GameEngine {
             state.setPendingAction(null);
             return success("过河拆桥成功");
         } else if ("SHUN_SHOU".equals(effectType)) {
-            if (cardId != null && !"__RANDOM_HAND__".equals(cardId)) {
+            if (cardId == null || cardId.trim().isEmpty()) {
+                return failure("必须选择一张要获得的牌");
+            }
+            if (!pending.getOptionalCardIds().contains(cardId)) {
+                return failure("无效的卡牌选择");
+            }
+            if (!"__RANDOM_HAND__".equals(cardId)) {
                 // 选择了指定装备/判定区牌获得
                 GameCard stealCard = findCard(target, cardId);
                 if (stealCard == null) {
@@ -3484,7 +3700,22 @@ public class GameEngine {
             return failure("不在出牌阶段");
         }
         state.setPhase("DISCARD");
-        return processActionPhaseResult(state, state.getCurrentPlayer());
+        GamePlayer current = state.getCurrentPlayer();
+        int discardCount = current.getDiscardCount();
+        if (discardCount > 0) {
+            GameAction action = new GameAction();
+            action.setActionType("DISCARD");
+            action.setSourcePlayerId(current.getUserId());
+            action.setDiscardCount(discardCount);
+            action.setMessage("请弃置 " + discardCount + " 张手牌");
+            List<String> cardIds = current.getHandCards().stream()
+                    .map(GameCard::getId).toList();
+            action.setOptionalCardIds(cardIds);
+            action.setOptionalCards(cardIdsToClientMap(state, cardIds));
+            action.setOptionalTargetIds(Collections.singletonList(current.getUserId()));
+            return success("进入弃牌阶段", action);
+        }
+        return success("进入弃牌阶段");
     }
 
     /**
@@ -3639,6 +3870,28 @@ public class GameEngine {
                 // 脱离濒死
                 state.setPendingAction(null);
                 state.addLog(dyingPlayer.getUsername() + " 脱离濒死");
+
+                // 优先继续铁索连环传导（救援主目标后继续传导）
+                Map<String, Object> chainCont = (Map<String, Object>) dyingExtra.get("chainContinuation");
+                if (chainCont != null) {
+                    List<Long> remainingTargets = (List<Long>) chainCont.get("remainingChainTargets");
+                    int cBaseDmg = (int) chainCont.get("baseDamage");
+                    String cNature = (String) chainCont.get("nature");
+                    Long cAttackerId = (Long) chainCont.get("attackerId");
+                    GamePlayer cAttacker = cAttackerId != null ? findPlayerById(state, cAttackerId) : null;
+                    Long cTriggerId = (Long) chainCont.get("triggerTargetId");
+                    GamePlayer cTrigger = findPlayerById(state, cTriggerId);
+
+                    state.addLog("继续铁索连环传导");
+                    ActionResult chainResult = processChainStep(state, cAttacker, cTrigger, cBaseDmg, cNature, remainingTargets);
+                    if (chainResult != null) return chainResult;
+
+                    // 传导完成后检查游戏结束
+                    state.checkGameOver();
+                    if (state.isFinished()) return success("连环传导导致游戏结束");
+                    return success("救援成功，连环传导完成");
+                }
+
                 // 铁索传导后可能有多个玩家濒死，检查其他玩家是否需要濒死处理
                 for (GamePlayer p : state.getPlayers()) {
                     if (p.getUserId() != dyingUserId && p.getCurrentHp() <= 0) {
@@ -3677,6 +3930,10 @@ public class GameEngine {
         return state.getPlayers().stream()
                 .filter(p -> p.getUserId().equals(userId))
                 .findFirst().orElse(null);
+    }
+
+    private boolean isShaLike(GameCard card) {
+        return card != null && card.getCardType() == CardType.SHA;
     }
 
     private GameCard findCard(GamePlayer player, String cardId) {
@@ -3922,15 +4179,51 @@ public class GameEngine {
         }
     }
 
-    private ActionResult processActionPhaseResult(GameState state, GamePlayer current) {
-        if (state.getPendingAction() != null) {
-            return success("需要继续处理待响应动作", state.getPendingAction());
+    /**
+     * 铁索连环属性伤害逐目标结算 — 每传导一个目标即检查濒死。
+     * 不同于 propagateChainDamage（批量处理），此方法逐目标推进，支持打断/续传。
+     * continuation 参数携带剩余未处理目标队列，用于濒死后恢复传导。
+     * 所有目标处理完毕返回 null，否则返回濒死 pendingAction。
+     */
+    @SuppressWarnings("unchecked")
+    private ActionResult processChainStep(GameState state, GamePlayer source, GamePlayer triggerTarget,
+                                           int baseDamage, String nature, List<Long> remainingTargets) {
+        while (!remainingTargets.isEmpty()) {
+            Long targetId = remainingTargets.remove(0);
+            GamePlayer p = findPlayerById(state, targetId);
+            if (p == null || !p.isAlive() || !p.isChained()) continue;
+
+            p.setChained(false);
+
+            int actual = baseDamage;
+            if ("FIRE".equals(nature) && p.getArmor() != null && p.getArmor().getCardType() == CardType.TENG_JIA) {
+                actual++;
+                state.addLog("藤甲效果触发，火焰伤害+1");
+            }
+            if (p.getArmor() != null && p.getArmor().getCardType() == CardType.BAI_YIN && actual > 1) {
+                state.addLog("白银狮子效果触发，伤害减至1点");
+                actual = 1;
+            }
+
+            p.takeDamage(actual);
+            state.addLog(p.getUsername() + " 受到" + actual + "点连环传导伤害");
+
+            // 逐目标濒死检查
+            ActionResult dying = checkDying(state, p);
+            if (dying != null) {
+                // 保存剩余传导目标，救援后继续
+                Map<String, Object> cont = new HashMap<>();
+                cont.put("remainingChainTargets", remainingTargets);
+                cont.put("baseDamage", baseDamage);
+                cont.put("nature", nature);
+                cont.put("triggerTargetId", triggerTarget.getUserId());
+                cont.put("attackerId", source != null ? source.getUserId() : null);
+                ((Map<String, Object>) dying.pendingAction().getExtraData()).put("chainContinuation", cont);
+                state.addLog(p.getUsername() + " 濒死，连环传导将在救援后继续");
+                return dying;
+            }
         }
-        GameAction action = processPhase(state);
-        if (action != null) {
-            return success("阶段处理完成", action);
-        }
-        return success("阶段处理完成");
+        return null; // 所有传导目标处理完毕
     }
 
     private ActionResult success(String message) {
