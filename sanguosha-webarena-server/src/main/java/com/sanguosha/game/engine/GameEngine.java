@@ -283,54 +283,44 @@ public class GameEngine {
                     state.getTempCards().clear();
                     state.getTempCards().add(judgeCard);
 
-                    // 判定阶段打开无懈可击窗口
-                    if (hasAnyWuxie(state)) {
-                        Map<String, Object> extraData = new HashMap<>();
-                        extraData.put("trickCardId", judgeCard.getId());
-                        extraData.put("trickCardType", judgeCard.getCardType().name());
-                        extraData.put("sourcePlayerId", current.getUserId());
-                        extraData.put("originalTargetUserId", String.valueOf(current.getUserId()));
-                        extraData.put("originalTargetCardId", null);
-                        extraData.put("pendingTargetUserIds", new ArrayList<String>());
-                        extraData.put("currentTargetIndex", 0);
-                        extraData.put("wuxieStack", new ArrayList<String>());
-                        extraData.put("respondedSkipIds", new ArrayList<Long>());
-                        extraData.put("isDelayTrickJudgment", true);
-                        extraData.put("isAoe", false);
+                    // 打开无懈可击窗口（移除 anyHasWuxie 快捷路径，确保延时锦囊判定前窗口一致打开）
+                    Map<String, Object> extraData = new HashMap<>();
+                    extraData.put("trickCardId", judgeCard.getId());
+                    extraData.put("trickCardType", judgeCard.getCardType().name());
+                    extraData.put("sourcePlayerId", current.getUserId());
+                    extraData.put("originalTargetUserId", String.valueOf(current.getUserId()));
+                    extraData.put("originalTargetCardId", null);
+                    extraData.put("pendingTargetUserIds", new ArrayList<String>());
+                    extraData.put("currentTargetIndex", 0);
+                    extraData.put("wuxieStack", new ArrayList<String>());
+                    extraData.put("respondedSkipIds", new ArrayList<Long>());
+                    extraData.put("isDelayTrickJudgment", true);
+                    extraData.put("isAoe", false);
 
-                        List<Long> queue = state.getAlivePlayers().stream()
-                                .map(GamePlayer::getUserId)
-                                .collect(java.util.stream.Collectors.toList());
-                        extraData.put("responderQueue", queue);
-                        extraData.put("currentResponderIndex", 0);
+                    List<Long> queue = state.getAlivePlayers().stream()
+                            .map(GamePlayer::getUserId)
+                            .collect(java.util.stream.Collectors.toList());
+                    extraData.put("responderQueue", queue);
+                    extraData.put("currentResponderIndex", 0);
 
-                        ActionResult ar = advanceToNextWuxieResponder(state, extraData, current.getUserId());
-                        GameAction pendingFromWuxie = ar.pendingAction();
-                        if (pendingFromWuxie != null) {
-                            return pendingFromWuxie;
-                        }
-                        // 队列无人有资格响应或无懈已结算，继续下一张判定牌
-                        state.getTempCards().clear();
+                    ActionResult ar = advanceToNextWuxieResponder(state, extraData, current.getUserId());
+                    GameAction pendingFromWuxie = ar.pendingAction();
+                    if (pendingFromWuxie != null) {
+                        return pendingFromWuxie;
+                    }
+                    // 队列无人有资格响应或无懈已结算，继续下一张判定牌
+                    state.getTempCards().clear();
 
-                        // [GUARD] 无懈可击流程结束后，防御性清理残留的 WAIT_WUXIE_RESPONSE
-                        if (state.getPendingAction() != null && "WAIT_WUXIE_RESPONSE".equals(state.getPendingAction().getActionType())) {
-                            log.warn("[WUXIE GUARD] JUDGE phase: stale WAIT_WUXIE_RESPONSE after wuxie chain resolution, clearing");
-                            state.setPendingAction(null);
-                        }
-
-                        if (state.getPendingAction() != null) {
-                            return state.getPendingAction();
-                        }
-                        continue;
+                    // [GUARD] 无懈可击流程结束后，防御性清理残留的 WAIT_WUXIE_RESPONSE
+                    if (state.getPendingAction() != null && "WAIT_WUXIE_RESPONSE".equals(state.getPendingAction().getActionType())) {
+                        log.warn("[WUXIE GUARD] JUDGE phase: stale WAIT_WUXIE_RESPONSE after wuxie chain resolution, clearing");
+                        state.setPendingAction(null);
                     }
 
-                    // 无人有无懈，直接判定
-                    applyDelayTrickEffect(state, current, judgeCard);
-                    state.getTempCards().clear();
-                    // applyDelayTrickEffect 可能设置了濒死 pending action（闪电传导）
                     if (state.getPendingAction() != null) {
                         return state.getPendingAction();
                     }
+                    continue;
                 }
                 state.nextPhase();
                 return processPhase(state);
@@ -1660,25 +1650,7 @@ public class GameEngine {
             return success("无有效目标");
         }
 
-        // 动态扫描：每次调用重新检查
-        if (!hasAnyWuxie(state)) {
-            if (isAoe) {
-                // AOE 无快路径：走正常无懈框架确保 RESPOND 动作有 aoeContext
-                // advanceToNextWuxieResponder 将耗尽队列（无人有无懈）
-                // → resolveWuxieChain → resolveAoeTarget → 创建带 aoeContext 的 RESPOND 动作
-                return openWuxieForTarget(state, player.getUserId(), card, type,
-                        targetUserId, targetCardId, targets, 0, true);
-            }
-            // 非AOE锦囊：无人有无懈，直接结算
-            state.getTempCards().clear();
-            ActionResult result = effect.execute(state, player, card, targetUserId, targetCardId);
-            if (result.success()) {
-                fireEvent(new GameEvent(GameEventType.CARD_USED, state, player, null, card, 0, null));
-            }
-            return result;
-        }
-
-        // 有人有无懈，打开无懈响应窗口（AOE逐目标）
+        // 始终打开无懈可击响应窗口（移除 anyHasWuxie 快捷路径，确保窗口行为一致）
         return openWuxieForTarget(state, player.getUserId(), card, type,
                 targetUserId, targetCardId, targets, 0, isAoe);
     }
@@ -1702,13 +1674,7 @@ public class GameEngine {
         // 铁索连环牌已使用，弃置
         state.discardCard(card);
 
-        // 动态扫描
-        if (!hasAnyWuxie(state)) {
-            state.getTempCards().clear();
-            return useTieSuo(state, player, card, targetUserIds);
-        }
-
-        // 逐目标无懈
+        // 逐目标无懈（移除 anyHasWuxie 快捷路径）
         return openWuxieForTarget(state, player.getUserId(), card, CardType.TIE_SUO,
                 null, null, targets, 0, true);
     }
@@ -2197,21 +2163,7 @@ public class GameEngine {
         }
 
         if (nextIndex < pendingTargets.size()) {
-            // 动态扫描：下个目标前重新检查是否有人有无懈
-            if (!hasAnyWuxie(state)) {
-                // 无人有无懈，剩余目标直接结算
-                for (int i = nextIndex; i < pendingTargets.size(); i++) {
-                    @SuppressWarnings("unchecked")
-                    List<String> procIds = (List<String>) extra.get("processedTargetUserIds");
-                    if (procIds != null && procIds.contains(pendingTargets.get(i))) {
-                        continue;
-                    }
-                    applyDirectAoeEffect(state, trickCardType, sourcePlayerId, extra, pendingTargets, i);
-                }
-                return finishAoe(state, trickCardType, extra);
-            }
-
-            // 打开新窗口给下一目标
+            // 打开新窗口给下一目标（移除 anyHasWuxie 快捷路径，每目标独立无懈检查）
             extra.put("wuxieStack", new ArrayList<String>());
 
             List<Long> aoeResponderQueue = state.getAlivePlayers().stream()
@@ -2225,38 +2177,6 @@ public class GameEngine {
         }
 
         return finishAoe(state, trickCardType, extra);
-    }
-
-    /**
-     * 直接对AOE目标应用效果（无懈窗口跳过时）
-     */
-    @SuppressWarnings("unchecked")
-    private void applyDirectAoeEffect(GameState state, CardType trickCardType,
-                                       Long sourcePlayerId, Map<String, Object> extra,
-                                       List<String> pendingTargets, int index) {
-        String targetId = pendingTargets.get(index);
-        GamePlayer target = findPlayerById(state, Long.valueOf(targetId));
-        if (target == null || !target.isAlive()) return;
-
-        GamePlayer sourcePlayer = findPlayerById(state, sourcePlayerId);
-        if (sourcePlayer == null) sourcePlayer = state.getCurrentPlayer();
-
-        switch (trickCardType) {
-            case TAO_YUAN -> {
-                int healed = target.heal(1);
-                if (healed > 0) state.addLog(target.getUsername() + " 回复了1点体力（桃园结义）");
-            }
-            case TIE_SUO -> {
-                target.setChained(!target.isChained());
-                state.addLog(sourcePlayer.getUsername() +
-                        (target.getUserId().equals(sourcePlayerId) ? "将自身" : "将" + target.getUsername()) +
-                        (target.isChained() ? "横置" : "重置") + "（铁索连环）");
-            }
-            case WU_GU -> {
-                // 无懈跳过时只记录未取消的
-            }
-            default -> {}
-        }
     }
 
     /**
