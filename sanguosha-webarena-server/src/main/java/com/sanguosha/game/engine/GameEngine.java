@@ -1112,6 +1112,51 @@ public class GameEngine {
     }
 
     /**
+     * 借刀杀人：无懈可击链解析后（偶数=未被抵消）创建 RESPOND_SHA
+     * 从 resolveWuxieChain 调用，复用 playJieDaoWithWuxie 中的 RESPOND_SHA 逻辑
+     */
+    private ActionResult createJieDaoWuxieResolved(GameState state, GamePlayer sourcePlayer,
+                                                    String jieDaoTargetId, String shaTargetId) {
+        GamePlayer jdTarget = findPlayerById(state, Long.valueOf(jieDaoTargetId));
+        GamePlayer sTarget = findPlayerById(state, Long.valueOf(shaTargetId));
+        if (jdTarget == null) return failure("借刀目标已不存在");
+        if (sTarget == null) return failure("杀目标已不存在");
+
+        List<String> shaCardsList = jdTarget.getHandCards().stream()
+                .filter(c -> isShaLike(c))
+                .map(GameCard::getId)
+                .toList();
+
+        if (shaCardsList.isEmpty()) {
+            GameCard weapon = removeEquipment(jdTarget, state, jdTarget.getWeapon().getCardType());
+            if (weapon != null) {
+                sourcePlayer.drawCards(Collections.singletonList(weapon));
+                state.addLog(sourcePlayer.getUsername() + " 获得了" + jdTarget.getUsername() + " 的 " + weapon.getCardType().getDisplayName());
+            }
+            state.setPendingAction(null);
+            return success("借刀杀人：借刀目标无杀，失去武器");
+        }
+
+        GameAction jdAction = new GameAction();
+        jdAction.setActionType("RESPOND_SHA");
+        jdAction.setSourcePlayerId(sourcePlayer.getUserId());
+        jdAction.setOptionalCardIds(shaCardsList);
+        jdAction.setOptionalCards(cardIdsToClientMap(state, shaCardsList));
+        jdAction.setOptionalTargetIds(Collections.singletonList(jdTarget.getUserId()));
+        jdAction.setMessage("请出杀，否则失去武器（借刀杀人）");
+        jdAction.setExtraData(Map.of(
+                "effectType", "JIE_DAO",
+                "weaponId", jdTarget.getWeapon().getId(),
+                "jieDaoTargetId", jieDaoTargetId,
+                "shaTargetId", shaTargetId
+        ));
+
+        state.setPendingAction(jdAction);
+        state.addLog(sourcePlayer.getUsername() + " 对 " + jdTarget.getUsername() + " 使用了借刀杀人，要求对 " + sTarget.getUsername() + " 出杀");
+        return success("借刀杀人已使用", jdAction);
+    }
+
+    /**
      * 使用装备牌
      */
     private ActionResult playEquipmentCard(GameState state, GamePlayer player, GameCard card,
@@ -1920,6 +1965,11 @@ public class GameEngine {
             if (sourcePlayer == null) return failure("未找到发起者");
 
             CardEffect effect = trickEffects.get(trickCardType);
+            if (effect == null && trickCardType == CardType.JIE_DAO) {
+                // 借刀杀人通过 playJieDaoWithWuxie 进入，无懈链通过后创建 RESPOND_SHA
+                return createJieDaoWuxieResolved(state, sourcePlayer,
+                        originalTargetUserId, originalTargetCardId);
+            }
             if (effect == null) return failure("未知锦囊效果");
 
             // 结算原始锦囊效果（卡牌已从手牌移除，effect 中的 removeHandCard 是无操作）
@@ -2071,7 +2121,8 @@ public class GameEngine {
                 cancelledTargets.add(currentTargetId);
                 state.addLog((currentTarget != null ? currentTarget.getUsername() : currentTargetId)
                         + " 被无懈可击，跳过五谷丰登选牌");
-                return advanceAoeToNext(state, trickCardType, sourcePlayerId, extra, pendingTargets, currentIndex);
+                extra.put("currentTargetIndex", currentIndex);
+                return advanceWuguToNextTarget(state, extra);
             }
             // 未取消：直接创建选牌动作
             List<String> cardIds = state.getTempCards().stream()
@@ -2206,6 +2257,103 @@ public class GameEngine {
             }
             default -> {}
         }
+    }
+
+    /**
+     * 五谷丰登：从当前索引找到下一个有效目标，先过无懈再选牌
+     * 每个目标选牌前必须经过无懈检查，包括后续目标
+     */
+    @SuppressWarnings("unchecked")
+    private ActionResult advanceWuguToNextTarget(GameState state, Map<String, Object> aoeExtra) {
+        List<String> pendingTargets = (List<String>) aoeExtra.get("pendingTargetUserIds");
+        int index = (int) aoeExtra.get("currentTargetIndex");
+        List<String> cancelledTargets = (List<String>) aoeExtra.getOrDefault("wuguCancelledTargets", new ArrayList<>());
+        List<String> alreadyPicked = (List<String>) aoeExtra.getOrDefault("wuguAlreadyPicked", new ArrayList<>());
+        Long sourcePlayerId = aoeExtra.get("sourcePlayerId") instanceof Number
+                ? ((Number) aoeExtra.get("sourcePlayerId")).longValue() : null;
+
+        // 跳过已被取消或已选牌的目标
+        while (index < pendingTargets.size()) {
+            String candidate = pendingTargets.get(index);
+            if (!cancelledTargets.contains(candidate) && !alreadyPicked.contains(candidate)) {
+                break;
+            }
+            index++;
+        }
+
+        // 无更多有效目标或牌堆已空
+        if (index >= pendingTargets.size() || state.getTempCards() == null || state.getTempCards().isEmpty()) {
+            return finishWugu(state);
+        }
+
+        aoeExtra.put("currentTargetIndex", index);
+        String targetId = pendingTargets.get(index);
+
+        // 动态检查：重新扫描所有存活玩家是否持有无懈可击
+        if (hasAnyWuxie(state)) {
+            // 有人有无懈：创建 WAIT_WUXIE_RESPONSE
+            List<Long> responderQueue = state.getAlivePlayers().stream()
+                    .map(GamePlayer::getUserId).toList();
+            aoeExtra.put("responderQueue", responderQueue);
+            aoeExtra.put("currentResponderIndex", 0);
+            aoeExtra.put("wuxieStack", new ArrayList<String>());
+            aoeExtra.put("respondedSkipIds", new ArrayList<Long>());
+            aoeExtra.put("processedTargetUserIds", new ArrayList<String>());
+            return advanceToNextWuxieResponder(state, aoeExtra, sourcePlayerId);
+        }
+
+        // 无人有无懈：直接创建选牌动作
+        return createWuguChooseCardForTarget(state, aoeExtra, targetId, index);
+    }
+
+    /**
+     * 为五谷丰登指定目标创建 CHOOSE_WUGU_CARD
+     */
+    @SuppressWarnings("unchecked")
+    private ActionResult createWuguChooseCardForTarget(GameState state, Map<String, Object> aoeExtra,
+                                                        String targetId, int targetIndex) {
+        GamePlayer targetPlayer = findPlayerById(state, Long.valueOf(targetId));
+        if (targetPlayer == null || !targetPlayer.isAlive()) {
+            return advanceWuguToNextTarget(state, aoeExtra);
+        }
+
+        List<String> cardIds = state.getTempCards().stream().map(GameCard::getId).toList();
+        if (cardIds.isEmpty()) {
+            return finishWugu(state);
+        }
+        List<Map<String, Object>> cardInfos = state.getTempCards().stream().map(this::cardToClientMap).toList();
+
+        GameAction action = new GameAction();
+        action.setActionType("CHOOSE_WUGU_CARD");
+        action.setSourcePlayerId(aoeExtra.get("sourcePlayerId") instanceof Number
+                ? ((Number) aoeExtra.get("sourcePlayerId")).longValue() : null);
+        action.setOptionalCardIds(cardIds);
+        action.setOptionalCards(cardInfos);
+        action.setOptionalTargetIds(Collections.singletonList(Long.valueOf(targetId)));
+        action.setMessage("请选择一张牌（五谷丰登）");
+
+        Map<String, Object> chooserExtra = new java.util.LinkedHashMap<>();
+        List<String> allTargets = (List<String>) aoeExtra.get("pendingTargetUserIds");
+        chooserExtra.put("pickerOrder", new ArrayList<>(allTargets));
+        chooserExtra.put("pickerIndex", targetIndex);
+        chooserExtra.put("aoeOriginalExtra", aoeExtra);
+        action.setExtraData(chooserExtra);
+
+        state.setPendingAction(action);
+        state.addLog("五谷丰登选牌开始");
+        return success("五谷丰登选牌", action);
+    }
+
+    private ActionResult finishWugu(GameState state) {
+        if (state.getTempCards() != null) {
+            for (GameCard remaining : state.getTempCards()) {
+                state.discardCard(remaining);
+            }
+            state.getTempCards().clear();
+        }
+        state.setPendingAction(null);
+        state.addLog("五谷丰登结算完成");
+        return success("五谷丰登结算完成");
     }
 
     /**
@@ -3562,22 +3710,17 @@ public class GameEngine {
                     aoeExtra.put("wuguCurrentCardIds", remainingIds);
                     aoeExtra.put("wuguCurrentCardInfos", remainingInfos);
 
-                    // 剩余待选玩家，重置无懈栈
+                    // 更新剩余待选玩家列表
                     List<String> remainingTargets = new ArrayList<>();
                     for (int i = nextIndex; i < pickerOrder.size(); i++) {
                         remainingTargets.add(String.valueOf(pickerOrder.get(i)));
                     }
                     aoeExtra.put("pendingTargetUserIds", remainingTargets);
                     aoeExtra.put("currentTargetIndex", 0);
-                    aoeExtra.put("wuxieStack", new ArrayList<String>());
-                    aoeExtra.put("respondedSkipIds", new ArrayList<Long>());
 
-                    // 重新进入无懈框架：每次都会动态 hasAnyWuxie 检查
-                    // 如果无人有无懈，队列耗尽 → resolveWuxieChain → resolveAoeTarget
-                    // resolveAoeTarget 为未取消目标创建 CHOOSE_WUGU_CARD
-                    return advanceToNextWuxieResponder(state, aoeExtra,
-                            aoeExtra.get("sourcePlayerId") instanceof Number
-                                    ? ((Number) aoeExtra.get("sourcePlayerId")).longValue() : null);
+                    // 统一通过 advanceWuguToNextTarget 推进：
+                    // 动态 hasAnyWuxie → 有无懈则创建 WAIT_WUXIE_RESPONSE，否则直接创建 CHOOSE_WUGU_CARD
+                    return advanceWuguToNextTarget(state, aoeExtra);
                 }
             }
 

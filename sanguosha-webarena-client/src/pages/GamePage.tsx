@@ -699,38 +699,50 @@ export default function GamePage() {
           if (isJieDao) {
             return (
               <div className="text-target-select">
-                <span>
-                  {selectedTargetIds.length === 0
-                    ? '选择借刀目标（有武器的敌人）：'
-                    : selectedTargetIds.length === 1
-                    ? '选择杀的目标（在借刀目标攻击范围内）：'
-                    : '已选择两个目标'}
-                </span>
-                {gs.players.filter((p) => {
-                  if (!p.alive) return false;
-                  if (selectedTargetIds.length === 0) return true;
-                  // 选第2目标（杀的目标）：只排除借刀目标B自己，且必须在B的攻击范围内
-                  const jieDaoTarget = gs.players.find(p2 => p2.userId === selectedTargetIds[0]);
-                  if (jieDaoTarget && !canAttackPlayer(jieDaoTarget, p)) return false;
-                  return true;
-                }).map((p) => {
-                  const idx = selectedTargetIds.indexOf(p.userId);
-                  const isSelected = idx >= 0;
-                  // 已经选了借刀目标后，不能再选自己作为杀目标
-                  const blocked = selectedTargetIds.length === 1 && p.userId === selectedTargetIds[0];
-                  return (
-                    <button key={p.userId}
-                      className={`text-btn ${isSelected ? 'primary' : ''}`}
-                      disabled={blocked || isSelected}
-                      onClick={() => {
-                        if (selectedTargetIds.length === 0 || (selectedTargetIds.length === 1 && p.userId !== selectedTargetIds[0])) {
-                          setSelectedTargetIds(prev => [...prev, p.userId]);
-                        }
-                      }}>
-                      {p.username}{isSelected ? `（第${idx + 1}目标）` : ''}
-                    </button>
-                  );
-                })}
+                <div style={{ marginBottom: 6 }}>
+                  <span>选择借刀对象（有武器的敌人）：</span>
+                  <div>
+                    {gs.players.filter(p => p.alive && p.userId !== currentUser?.userId).map(p => (
+                      <button key={p.userId}
+                        className={`text-btn ${selectedTargetIds[0] === p.userId ? 'primary' : ''}`}
+                        onClick={() => setSelectedTargetIds([p.userId])}>
+                        {p.username}
+                      </button>
+                    ))}
+                    {gs.players.filter(p => p.alive && p.userId !== currentUser?.userId).length === 0 && (
+                      <span className="text-dim">没有可选的借刀目标</span>
+                    )}
+                  </div>
+                </div>
+                {selectedTargetIds.length >= 1 && (
+                  <div style={{ marginBottom: 6 }}>
+                    <span>选择杀的目标（在借刀目标攻击范围内）：</span>
+                    <div>
+                      {gs.players.filter(p => {
+                        if (!p.alive) return false;
+                        if (p.userId === selectedTargetIds[0]) return false;
+                        const jdTarget = gs.players.find(p2 => p2.userId === selectedTargetIds[0]);
+                        if (jdTarget && !canAttackPlayer(jdTarget, p)) return false;
+                        return true;
+                      }).map(p => (
+                        <button key={p.userId}
+                          className={`text-btn ${selectedTargetIds[1] === p.userId ? 'primary' : ''}`}
+                          onClick={() => setSelectedTargetIds(prev => [prev[0], p.userId])}>
+                          {p.username}
+                        </button>
+                      ))}
+                      {gs.players.filter(p => {
+                        if (!p.alive) return false;
+                        if (p.userId === selectedTargetIds[0]) return false;
+                        const jdTarget = gs.players.find(p2 => p2.userId === selectedTargetIds[0]);
+                        if (jdTarget && !canAttackPlayer(jdTarget, p)) return false;
+                        return true;
+                      }).length === 0 && (
+                        <span className="text-dim">没有可选的杀目标</span>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {selectedTargetIds.length === 2 && (
                   <div className="text-dim">
                     借刀目标：{gs.players.find(p => p.userId === selectedTargetIds[0])?.username}，
