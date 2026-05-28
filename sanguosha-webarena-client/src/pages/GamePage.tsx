@@ -709,8 +709,7 @@ export default function GamePage() {
                 {gs.players.filter((p) => {
                   if (!p.alive) return false;
                   if (selectedTargetIds.length === 0) return true;
-                  // 选第2目标（杀的目标）：排除使用者A，且必须在借刀目标B的攻击范围内
-                  if (p.userId === currentUser?.userId) return false;
+                  // 选第2目标（杀的目标）：只排除借刀目标B自己，且必须在B的攻击范围内
                   const jieDaoTarget = gs.players.find(p2 => p2.userId === selectedTargetIds[0]);
                   if (jieDaoTarget && !canAttackPlayer(jieDaoTarget, p)) return false;
                   return true;
