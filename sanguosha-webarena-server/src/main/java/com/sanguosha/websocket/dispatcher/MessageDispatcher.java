@@ -40,7 +40,7 @@ public class MessageDispatcher {
                 return;
             }
 
-            log.info("[DISPATCH] userId={} type={} data={}", userId, type,
+            log.debug("[DISPATCH] userId={} type={} data={}", userId, type,
                     type.equals("PING") ? "PING" : data != null ? data.toString().replaceAll("[\r\n]", " ").substring(0, Math.min(data.toString().length(), 200)) : "null");
 
             switch (type) {

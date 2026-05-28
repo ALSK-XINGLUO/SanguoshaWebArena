@@ -116,17 +116,11 @@ public class GamePlayer {
     }
 
     /**
-     * 受到伤害
+     * 受到伤害（HP 可以为负数，死亡由濒死流程决定）
      */
     public int takeDamage(int damage) {
-        log.info("[PLAYER takeDamage] userId={} username={} damage={} hpBefore={} hpAfter={}",
-                userId, username, damage, currentHp, Math.max(0, currentHp - damage));
         currentHp -= damage;
-        if (currentHp <= 0) {
-            currentHp = 0;
-            alive = false;
-            log.info("[PLAYER takeDamage] userId={} DIED", userId);
-        }
+        log.info("[PLAYER takeDamage] userId={} username={} damage={} hp={}", userId, username, damage, currentHp);
         return damage;
     }
 

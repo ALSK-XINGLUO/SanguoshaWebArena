@@ -853,14 +853,6 @@ public class GameEngine {
                 .map(GameCard::getId)
                 .toList();
 
-        // [DEBUG JUE_DOU] 打出决斗时的日志
-        log.info("[JUE_DOU] useJueDou: attacker={} target={} targetHandSize={} targetShaCount={} shaCardIds={}",
-                player.getUserId(), target.getUserId(), target.getHandCards().size(), shaCards.size(), shaCards);
-        for (GameCard _c : target.getHandCards()) {
-            log.info("[JUE_DOU] target hand card: id={} type={} nature={} displayName={} isShaLike={}",
-                    _c.getId(), _c.getCardType(), _c.getNature(), _c.getDisplayName(), isShaLike(_c));
-        }
-
         GameAction action = new GameAction();
         action.setActionType("RESPOND_SHA");
         action.setSourceCardId(card.getId());
@@ -873,7 +865,7 @@ public class GameEngine {
 
         state.setPendingAction(action);
         state.addLog(player.getUsername() + " 对 " + target.getUsername() + " 使用了决斗");
-        log.info("[JUE_DOU] created RESPOND_SHA: actionId={} targetUserId={} sourcePlayerId={} effectType=JUE_DOU optionalCardIds={}",
+        log.debug("[JUE_DOU] created RESPOND_SHA: actionId={} targetUserId={} sourcePlayerId={} effectType=JUE_DOU optionalCardIds={}",
                 action.getActionId(), target.getUserId(), player.getUserId(), shaCards);
         return success("决斗已使用", action);
     }
@@ -2827,15 +2819,6 @@ public class GameEngine {
                     .map(GameCard::getId)
                     .toList();
 
-            // [DEBUG JUE_DOU] 打印决斗轮换日志
-            log.info("[JUE_DOU] rotation: responder={} initiator={} initiatorHandSize={} initiatorShaCount={} shaCardIds={} actionId={}",
-                    responder.getUserId(), initiator.getUserId(),
-                    initiator.getHandCards().size(), shaCards.size(), shaCards, pending.getActionId());
-            for (GameCard _c : initiator.getHandCards()) {
-                log.info("[JUE_DOU] initiator hand card: id={} type={} nature={} displayName={} isShaLike={}",
-                        _c.getId(), _c.getCardType(), _c.getNature(), _c.getDisplayName(), isShaLike(_c));
-            }
-
             GameAction newAction = new GameAction();
             newAction.setActionType("RESPOND_SHA");
             newAction.setSourceCardId(pending.getSourceCardId());
@@ -3755,9 +3738,6 @@ public class GameEngine {
      */
     private ActionResult checkDying(GameState state, GamePlayer player) {
         if (player.getCurrentHp() > 0) return null;
-
-        // 玩家处于濒死，临时存活以便求援
-        player.setAlive(true);
 
         // 按玩家顺序构建响应队列
         List<Long> responderQueue = state.getPlayers().stream()
